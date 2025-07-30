@@ -4,7 +4,7 @@ from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
 import cv2
 import numpy as np
-from improved_plate_detector import ImprovedLicensePlateDetector
+from final_plate_detector import FinalLicensePlateDetector
 import uuid
 import time
 import logging
@@ -69,8 +69,8 @@ def detect_plates():
         canny_low = int(request.form.get('canny_low', 50))
         canny_high = int(request.form.get('canny_high', 150))
         
-        # Initialize improved detector with custom parameters
-        detector = ImprovedLicensePlateDetector(
+        # Initialize final detector with custom parameters
+        detector = FinalLicensePlateDetector(
             min_area=min_area,
             max_area=max_area,
             min_aspect_ratio=min_aspect,
