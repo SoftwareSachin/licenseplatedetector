@@ -16,7 +16,7 @@ class RealisticLicensePlateDetector:
         self.max_aspect = max_aspect
         self.canny_low = canny_low
         self.canny_high = canny_high
-        self.min_confidence = 0.5  # Higher minimum confidence to reduce false positives
+        self.min_confidence = 0.8  # Much higher minimum confidence to reduce false positives
         
         # Setup logging
         logging.basicConfig(level=logging.INFO)
@@ -248,11 +248,14 @@ class RealisticLicensePlateDetector:
             aspect_ratio = w / h if h > 0 else 0
             aspect_score = 1.0 if self.min_aspect <= aspect_ratio <= self.max_aspect else 0.5
             
-            # Text-like features in the ROI
+            # Text-like features in the ROI (most important factor)
             text_score = self.analyze_text_features(roi)
             
-            # Combine scores
-            confidence = (rectangularity * 0.3 + aspect_score * 0.3 + text_score * 0.4)
+            # Position score (license plates are typically in lower portion of image)
+            position_score = self.analyze_position(roi)
+            
+            # Combine scores with heavy emphasis on text features
+            confidence = (rectangularity * 0.15 + aspect_score * 0.15 + text_score * 0.6 + position_score * 0.1)
             
             return min(confidence, 1.0)
             
@@ -290,15 +293,33 @@ class RealisticLicensePlateDetector:
                 if 0.2 <= aspect <= 2.0 and area > 20:
                     char_like_contours += 1
             
-            # Score based on edge density and character-like shapes
-            # Require more evidence for higher scores
-            char_score = min(char_like_contours / 8, 0.5)  # Need at least 4 chars for 0.25 score
-            edge_score = min(edge_density * 3, 0.5)  # Higher edge density requirement
+            # Very strict text analysis - require clear evidence of characters
+            char_score = 0.0
+            if char_like_contours >= 6:  # Need at least 6 character-like regions
+                char_score = min(char_like_contours / 12, 0.6)  # Max 0.6 for 12+ chars
             
-            text_score = char_score + edge_score
+            edge_score = 0.0 
+            if edge_density > 0.15:  # Need substantial edge density
+                edge_score = min(edge_density * 2, 0.4)  # Max 0.4
+            
+            # Both character regions AND edge density must be present
+            if char_like_contours >= 6 and edge_density > 0.15:
+                text_score = char_score + edge_score
+            else:
+                text_score = 0.0  # Fail if either requirement not met
             
             return min(text_score, 1.0)
             
+        except Exception as e:
+            return 0.0
+    
+    def analyze_position(self, roi):
+        """Analyze position characteristics for license plates."""
+        try:
+            # This is a placeholder - in a real implementation, 
+            # we'd consider the ROI's position relative to the full image
+            # License plates are typically in the lower 60% of vehicle images
+            return 0.1  # Small bonus for position
         except Exception as e:
             return 0.0
     
