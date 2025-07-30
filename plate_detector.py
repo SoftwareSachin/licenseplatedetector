@@ -477,6 +477,13 @@ class LicensePlateDetector:
         candidates.extend(adaptive_candidates)
         print(f"🔧 Adaptive detection found {len(adaptive_candidates)} candidates")
         
+        # Method 4: Fallback contour detection if no good candidates found
+        if len(candidates) == 0:
+            print("🔄 No candidates found, trying fallback contour detection...")
+            contour_candidates = self.detect_with_contours(gray_roi, roi_start)
+            candidates.extend(contour_candidates)
+            print(f"📐 Contour detection found {len(contour_candidates)} candidates")
+        
         # Combine and filter all candidates
         if candidates:
             # Remove duplicates and overlaps
@@ -1004,7 +1011,7 @@ class LicensePlateDetector:
     
     def detect_with_mser(self, gray_roi, roi_start):
         """
-        Use MSER (Maximally Stable Extremal Regions) to detect text regions.
+        Use MSER with strict license plate constraints.
         
         Args:
             gray_roi: Grayscale ROI
@@ -1014,11 +1021,13 @@ class LicensePlateDetector:
             List of candidates
         """
         try:
-            # Create MSER detector
+            # Create MSER detector with tighter parameters for license plates
             mser = cv2.MSER_create(
-                min_area=100,
-                max_area=3000,
-                delta=5
+                min_area=300,    # Minimum area for license plate text
+                max_area=1800,   # Maximum area to avoid large regions
+                delta=8,         # Stability parameter
+                max_variation=0.25,
+                min_diversity=0.2
             )
             
             # Detect regions
@@ -1026,34 +1035,94 @@ class LicensePlateDetector:
             
             candidates = []
             for region in regions:
-                if len(region) < 10:  # Skip very small regions
+                if len(region) < 15:  # Skip very small regions
                     continue
                     
                 # Get bounding rectangle
                 x, y, w, h = cv2.boundingRect(region.reshape(-1, 1, 2))
-                
-                # License plate size filtering
                 aspect_ratio = w / h if h > 0 else 0
-                if (60 <= w <= 200 and 15 <= h <= 50 and 
-                    2.0 <= aspect_ratio <= 5.0):
+                
+                # Strict license plate constraints
+                if (80 <= w <= 140 and 18 <= h <= 35 and 
+                    2.8 <= aspect_ratio <= 4.2):
                     
-                    # Convert coordinates to full image
-                    full_y = y + roi_start
-                    
-                    # Create contour
-                    contour = np.array([
-                        [[x, full_y]], [[x + w, full_y]], 
-                        [[x + w, full_y + h]], [[x, full_y + h]]
-                    ], dtype=np.int32)
-                    
-                    confidence = 0.7  # Base confidence for MSER
-                    candidates.append((contour, (x, full_y, w, h), confidence))
+                    # Additional validation - check if region looks like text
+                    region_img = gray_roi[y:y+h, x:x+w]
+                    if self.looks_like_license_plate_text(region_img):
+                        
+                        # Convert coordinates to full image
+                        full_y = y + roi_start
+                        
+                        # Create contour
+                        contour = np.array([
+                            [[x, full_y]], [[x + w, full_y]], 
+                            [[x + w, full_y + h]], [[x, full_y + h]]
+                        ], dtype=np.int32)
+                        
+                        confidence = 0.8  # Higher confidence for validated regions
+                        candidates.append((contour, (x, full_y, w, h), confidence))
             
             return candidates
             
         except Exception as e:
             print(f"MSER detection error: {e}")
             return []
+    
+    def looks_like_license_plate_text(self, region):
+        """
+        Check if a region looks like license plate text.
+        
+        Args:
+            region: Grayscale image region
+            
+        Returns:
+            Boolean indicating if region looks like license plate text
+        """
+        if region.size == 0 or region.shape[0] < 15 or region.shape[1] < 60:
+            return False
+            
+        try:
+            # Check for horizontal text patterns
+            # License plates have strong horizontal edges
+            sobelx = cv2.Sobel(region, cv2.CV_64F, 1, 0, ksize=3)
+            sobely = cv2.Sobel(region, cv2.CV_64F, 0, 1, ksize=3)
+            
+            horizontal_edges = np.sum(np.abs(sobelx))
+            vertical_edges = np.sum(np.abs(sobely))
+            
+            # License plates should have more vertical edges (from characters)
+            if vertical_edges == 0:
+                return False
+                
+            edge_ratio = vertical_edges / (horizontal_edges + 1)
+            
+            # Check intensity variation (text should have good contrast)
+            intensity_std = np.std(region)
+            
+            # Check for character-like patterns
+            # Apply threshold to find potential characters
+            _, thresh = cv2.threshold(region, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            # Find contours in thresholded image
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Count potential character regions
+            char_count = 0
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                char_aspect = w / h if h > 0 else 0
+                char_area = w * h
+                
+                # Character-like dimensions
+                if (8 <= w <= 25 and 12 <= h <= 30 and 
+                    0.3 <= char_aspect <= 1.5 and char_area > 50):
+                    char_count += 1
+            
+            # License plates typically have 6-10 characters
+            return (edge_ratio > 0.8 and intensity_std > 25 and 4 <= char_count <= 12)
+            
+        except:
+            return False
     
     def detect_with_sobel(self, gray_roi, roi_start):
         """
@@ -1153,6 +1222,62 @@ class LicensePlateDetector:
             
         except Exception as e:
             print(f"Adaptive threshold detection error: {e}")
+            return []
+    
+    def detect_with_contours(self, gray_roi, roi_start):
+        """
+        Fallback contour-based detection for license plates.
+        
+        Args:
+            gray_roi: Grayscale ROI
+            roi_start: ROI start position
+            
+        Returns:
+            List of candidates
+        """
+        try:
+            # Enhanced preprocessing for better contour detection
+            blurred = cv2.GaussianBlur(gray_roi, (5, 5), 0)
+            
+            # Apply CLAHE for better contrast
+            clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(blurred)
+            
+            # Canny edge detection with optimal parameters
+            edges = cv2.Canny(enhanced, 50, 150, apertureSize=3)
+            
+            # Morphological operations to connect text
+            kernel_rect = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_rect)
+            
+            # Find contours
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            candidates = []
+            for contour in contours:
+                # Get bounding rectangle
+                x, y, w, h = cv2.boundingRect(contour)
+                area = cv2.contourArea(contour)
+                aspect_ratio = w / h if h > 0 else 0
+                
+                # License plate specific filtering
+                if (1000 <= area <= 4000 and 
+                    2.5 <= aspect_ratio <= 4.5 and
+                    80 <= w <= 150 and 20 <= h <= 40):
+                    
+                    # Check rectangularity
+                    rect_area = w * h
+                    rectangularity = area / rect_area if rect_area > 0 else 0
+                    
+                    if rectangularity > 0.7:  # Must be reasonably rectangular
+                        full_y = y + roi_start
+                        confidence = 0.6 * rectangularity  # Base confidence modified by shape
+                        candidates.append((contour, (x, full_y, w, h), confidence))
+            
+            return candidates
+            
+        except Exception as e:
+            print(f"Contour detection error: {e}")
             return []
     
     def filter_and_merge_candidates(self, candidates, full_gray_image):
