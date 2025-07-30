@@ -794,10 +794,10 @@ class LicensePlateDetector:
         # Find rectangular regions using template matching approach
         candidates = []
         
-        # Define license plate size ranges (width, height)
+        # Define more precise license plate size ranges (width, height)
         plate_sizes = [
-            (120, 30), (140, 35), (160, 40), (180, 45),  # Common sizes
-            (100, 25), (200, 50), (220, 55)  # Variations
+            (80, 20), (90, 22), (100, 25), (110, 28),    # Smaller plates
+            (120, 30), (130, 32), (140, 35), (150, 38)   # Standard plates
         ]
         
         for plate_w, plate_h in plate_sizes:
@@ -816,7 +816,7 @@ class LicensePlateDetector:
                     # Analyze the window for license plate characteristics
                     confidence = self.analyze_window_for_license_plate(window, edge_window)
                     
-                    if confidence > 0.4:  # Threshold for acceptance
+                    if confidence > 0.6:  # Higher threshold for more precise detection
                         # Convert coordinates back to full image
                         full_y = y + roi_start
                         full_x = x
@@ -835,9 +835,17 @@ class LicensePlateDetector:
         # Remove overlapping candidates
         filtered_candidates = self.remove_overlapping_windows(candidates)
         
-        # Sort by confidence and return best
+        # Sort by confidence and return best candidates
         filtered_candidates.sort(key=lambda x: x[2], reverse=True)
-        return filtered_candidates[:1]  # Return only the best candidate
+        
+        # Refine the best candidates by checking for actual license plate content
+        refined_candidates = []
+        for contour, rect, conf in filtered_candidates[:3]:  # Check top 3
+            x, y, w, h = rect
+            if self.validate_license_plate_region(full_gray_image[y:y+h, x:x+w]):
+                refined_candidates.append((contour, rect, conf))
+        
+        return refined_candidates[:1]  # Return only the best validated candidate
     
     def analyze_window_for_license_plate(self, window, edge_window):
         """
@@ -856,12 +864,14 @@ class LicensePlateDetector:
         try:
             confidence = 0.0
             
-            # Edge density check
+            # Edge density check - license plates should have moderate edge density
             edge_ratio = np.count_nonzero(edge_window) / edge_window.size
-            if 0.1 <= edge_ratio <= 0.4:  # Good amount of edges
-                confidence += 0.3
-            elif 0.05 <= edge_ratio <= 0.1 or 0.4 <= edge_ratio <= 0.6:
-                confidence += 0.1
+            if 0.15 <= edge_ratio <= 0.35:  # Optimal range for license plate text
+                confidence += 0.4
+            elif 0.1 <= edge_ratio < 0.15 or 0.35 < edge_ratio <= 0.5:
+                confidence += 0.2
+            else:
+                confidence -= 0.1  # Penalize poor edge density
             
             # Horizontal structure check
             horizontal_projection = np.sum(edge_window, axis=1)
@@ -933,6 +943,52 @@ class LicensePlateDetector:
                 filtered.append((contour, rect, conf))
         
         return filtered
+    
+    def validate_license_plate_region(self, region):
+        """
+        Final validation to ensure detected region contains license plate characteristics.
+        
+        Args:
+            region: Grayscale image region
+            
+        Returns:
+            Boolean indicating if this is likely a license plate
+        """
+        if region.size == 0 or region.shape[0] < 15 or region.shape[1] < 50:
+            return False
+            
+        try:
+            # Apply threshold
+            _, binary = cv2.threshold(region, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            # Check for reasonable text coverage
+            white_pixels = np.count_nonzero(binary)
+            white_ratio = white_pixels / binary.size
+            if not (0.1 <= white_ratio <= 0.5):
+                return False
+            
+            # Check for connected components (characters)
+            num_labels, _ = cv2.connectedComponents(binary)
+            if num_labels < 3 or num_labels > 15:  # Should have several characters
+                return False
+            
+            # Check horizontal distribution of content
+            horizontal_profile = np.sum(binary, axis=0)
+            non_zero_cols = np.count_nonzero(horizontal_profile)
+            horizontal_coverage = non_zero_cols / len(horizontal_profile)
+            if horizontal_coverage < 0.3:  # Content should span across width
+                return False
+            
+            # Check for reasonable vertical distribution
+            vertical_profile = np.sum(binary, axis=1)
+            peak_rows = np.where(vertical_profile > np.max(vertical_profile) * 0.3)[0]
+            if len(peak_rows) < region.shape[0] * 0.3:  # Should have content in middle area
+                return False
+                
+            return True
+            
+        except:
+            return False
     
     def draw_detections(self, image, bounding_rects, confidence_scores):
         """
