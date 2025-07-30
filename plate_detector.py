@@ -157,29 +157,29 @@ class LicensePlateDetector:
             if i < 10:
                 print(f"  Contour {i}: area={area:.0f}, aspect={aspect_ratio:.2f}, size=({w}x{h})")
             
-            # Strict area filtering for license plates
-            if area < 800 or area > 8000:  # License plates are typically in this range
+            # More lenient area filtering for license plates
+            if area < 500 or area > 12000:  # Expanded range for different plate sizes
                 area_filtered += 1
                 continue
                 
-            # License plate aspect ratio filtering - more specific
-            if aspect_ratio < 1.5 or aspect_ratio > 5.0:
+            # License plate aspect ratio filtering - more lenient
+            if aspect_ratio < 1.2 or aspect_ratio > 6.0:
                 aspect_filtered += 1
                 continue
             
-            # Size filtering - license plates have reasonable dimensions
-            if w < 50 or h < 15 or w > 300 or h > 100:
+            # Size filtering - more flexible dimensions
+            if w < 40 or h < 12 or w > 400 or h > 120:
                 aspect_filtered += 1
                 continue
             
-            # Text density analysis - license plates should have text-like patterns
+            # Text density analysis - more lenient threshold
             roi = gray_image[y:y+h, x:x+w]
             if roi.size == 0:
                 continue
                 
-            # Check for text-like characteristics
+            # Check for text-like characteristics with lower threshold
             text_score = self.analyze_text_characteristics(roi)
-            if text_score < 0.3:  # Minimum text-like score
+            if text_score < 0.15:  # Much lower threshold for text detection
                 text_filtered += 1
                 continue
             
@@ -205,7 +205,7 @@ class LicensePlateDetector:
     
     def analyze_text_characteristics(self, roi):
         """
-        Analyze if a region has text-like characteristics typical of license plates.
+        Simplified text analysis for license plate detection.
         
         Args:
             roi: Region of interest (grayscale image patch)
@@ -213,41 +213,31 @@ class LicensePlateDetector:
         Returns:
             Text-like score between 0 and 1
         """
-        if roi.size == 0:
+        if roi.size == 0 or roi.shape[0] < 10 or roi.shape[1] < 30:
             return 0.0
         
-        # Resize ROI for consistent analysis
-        roi_height = 32
-        roi_width = int(roi.shape[1] * roi_height / roi.shape[0])
-        if roi_width < 60:  # Minimum width for license plate text
-            return 0.0
+        try:
+            # Apply threshold to get binary image
+            _, binary = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
-        resized_roi = cv2.resize(roi, (roi_width, roi_height))
-        
-        # Apply threshold to get binary image
-        _, binary = cv2.threshold(resized_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        # Count transitions (text has many vertical transitions)
-        transitions = 0
-        for col in range(1, binary.shape[1]):
-            column_diff = cv2.absdiff(binary[:, col-1], binary[:, col])
-            transitions += np.count_nonzero(column_diff)
-        
-        # Normalize by image size
-        transition_density = transitions / (binary.shape[0] * binary.shape[1])
-        
-        # Edge density (text regions have more edges)
-        edges = cv2.Canny(resized_roi, 50, 150)
-        edge_density = np.count_nonzero(edges) / edges.size
-        
-        # Horizontal line detection (license plates often have horizontal borders)
-        horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 1))
-        horizontal_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, horizontal_kernel)
-        horizontal_score = np.count_nonzero(horizontal_lines) / horizontal_lines.size
-        
-        # Combine scores
-        text_score = (transition_density * 0.4 + edge_density * 0.4 + horizontal_score * 0.2)
-        return min(text_score, 1.0)
+            # Simple edge density check
+            edges = cv2.Canny(roi, 50, 150)
+            edge_density = np.count_nonzero(edges) / edges.size
+            
+            # Count connected components (characters should create multiple components)
+            num_labels, _ = cv2.connectedComponents(binary)
+            component_score = min(num_labels / 10.0, 1.0)  # More components = more likely text
+            
+            # Aspect ratio check - license plates are wider than tall
+            aspect_bonus = 0.2 if roi.shape[1] > roi.shape[0] * 1.5 else 0.0
+            
+            # Combine scores with more lenient weighting
+            text_score = edge_density * 0.5 + component_score * 0.3 + aspect_bonus
+            return min(text_score, 1.0)
+            
+        except Exception as e:
+            print(f"Text analysis error: {e}")
+            return 0.5  # Give neutral score if analysis fails
     
     def calculate_license_plate_confidence(self, contour, area, aspect_ratio, rect_ratio, text_score):
         """
@@ -408,12 +398,13 @@ class LicensePlateDetector:
         if len(valid_plates) <= 1:
             return valid_plates
         
-        # Filter out low-confidence detections first
-        high_confidence_plates = [(c, r, conf) for c, r, conf in valid_plates if conf > 0.6]
+        # More lenient confidence filtering
+        high_confidence_plates = [(c, r, conf) for c, r, conf in valid_plates if conf > 0.4]
         
         if not high_confidence_plates:
-            # If no high-confidence detections, take the best 1-2 candidates
-            return valid_plates[:1] if valid_plates else []
+            # If no high-confidence detections, take the best candidates with lower threshold
+            moderate_confidence_plates = [(c, r, conf) for c, r, conf in valid_plates if conf > 0.2]
+            return moderate_confidence_plates[:1] if moderate_confidence_plates else []
         
         # Apply NMS to high-confidence detections
         final_plates = []
@@ -475,9 +466,15 @@ class LicensePlateDetector:
         contours = self.find_contours(combined)
         print(f"📐 Found {len(contours)} total contours")
         
-        # Filter contours with stricter license plate criteria
+        # Filter contours with license plate criteria
         valid_plates = self.filter_license_plate_contours(contours, gray)
         print(f"✅ {len(valid_plates)} contours passed license plate filtering")
+        
+        # If no plates found with text analysis, try traditional filtering as fallback
+        if len(valid_plates) == 0:
+            print("🔄 No plates found with text analysis, trying traditional filtering...")
+            valid_plates = self.filter_contours(contours)
+            print(f"🔍 Fallback found {len(valid_plates)} candidates")
         
         # Remove overlapping detections
         final_plates = self.remove_overlapping_detections(valid_plates)
