@@ -204,7 +204,7 @@ class ImprovedLicensePlateDetector:
             
             # Analyze text characteristics
             text_score = self.analyze_license_plate_text(roi)
-            if text_score < 0.3:  # Minimum text score
+            if text_score < 0.1:  # Lower minimum text score to be less restrictive
                 continue
             
             # Check rectangularity
@@ -218,7 +218,7 @@ class ImprovedLicensePlateDetector:
                 contour, area, aspect_ratio, rect_ratio, text_score, y, image_shape[0]
             )
             
-            if confidence > 0.4:  # Minimum confidence threshold
+            if confidence > 0.2:  # Lower minimum confidence threshold
                 valid_plates.append((contour, rect, confidence))
         
         # Sort by confidence and remove overlapping detections
@@ -237,8 +237,8 @@ class ImprovedLicensePlateDetector:
         if aspect_ratio < self.min_aspect_ratio or aspect_ratio > self.max_aspect_ratio:
             return False
         
-        # Size filter
-        if width < 60 or height < 15 or width > 300 or height > 80:
+        # Size filter - more lenient
+        if width < 40 or height < 12 or width > 400 or height > 120:
             return False
         
         return True
@@ -270,16 +270,16 @@ class ImprovedLicensePlateDetector:
                     
                     char_count += 1
                     
-                    # Check if component looks like a character
-                    if (0.2 <= aspect <= 2.0 and  # Character aspect ratio
-                        20 <= area <= 1000 and     # Character area
-                        w >= 4 and h >= 8 and      # Minimum size
-                        w <= 50 and h <= 70):      # Maximum size
+                    # Check if component looks like a character - more lenient
+                    if (0.1 <= aspect <= 3.0 and  # More flexible character aspect ratio
+                        10 <= area <= 2000 and     # Larger character area range
+                        w >= 3 and h >= 5 and      # Smaller minimum size
+                        w <= 80 and h <= 100):     # Larger maximum size
                         valid_chars += 1
             
-            # Calculate text scores
-            char_density = valid_chars / max(char_count, 1)
-            char_count_score = min(valid_chars / 6.0, 1.0)  # License plates have ~5-8 chars
+            # Calculate text scores - more generous scoring
+            char_density = valid_chars / max(char_count, 1) if char_count > 0 else 0.5
+            char_count_score = min(valid_chars / 4.0, 1.0)  # License plates have ~3-8 chars
             
             # Edge density (license plates have strong edges)
             edges = cv2.Canny(roi, 50, 150)
@@ -288,11 +288,15 @@ class ImprovedLicensePlateDetector:
             # Contrast (license plates have high contrast)
             contrast = np.std(roi) / 255.0
             
-            # Combine scores
-            text_score = (char_density * 0.4 + 
-                         char_count_score * 0.3 + 
-                         edge_density * 0.2 + 
-                         contrast * 0.1)
+            # Basic shape score - license plates are rectangular
+            aspect_score = 0.5 if roi.shape[1] > roi.shape[0] * 1.5 else 0.2
+            
+            # Combine scores with more balanced weighting
+            text_score = (char_density * 0.3 + 
+                         char_count_score * 0.2 + 
+                         edge_density * 0.3 + 
+                         contrast * 0.1 +
+                         aspect_score * 0.1)
             
             return min(text_score, 1.0)
             
