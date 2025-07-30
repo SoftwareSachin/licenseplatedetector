@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>License Plate Detector</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Header -->
+            <div class="col-12 text-center py-4 bg-primary text-white">
+                <h1><i class="fas fa-car"></i> License Plate Detector</h1>
+                <p class="mb-0">Classical Computer Vision - No Deep Learning</p>
+            </div>
+        </div>
+        
+        <div class="row mt-4">
+            <!-- Control Panel -->
+            <div class="col-lg-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-upload"></i> Upload & Settings</h5>
+                    </div>
+                    <div class="card-body">
+                        <form id="uploadForm" enctype="multipart/form-data">
+                            <!-- File Upload -->
+                            <div class="mb-3">
+                                <label for="imageFile" class="form-label">Select Image</label>
+                                <input type="file" class="form-control" id="imageFile" name="file" 
+                                       accept="image/*" required>
+                                <div class="form-text">Supported: JPG, PNG, GIF, BMP, TIFF, WebP</div>
+                            </div>
+                            
+                            <!-- Detection Parameters -->
+                            <div class="accordion" id="parametersAccordion">
+                                <div class="accordion-item">
+                                    <h2 class="accordion-header">
+                                        <button class="accordion-button collapsed" type="button" 
+                                                data-bs-toggle="collapse" data-bs-target="#parametersCollapse">
+                                            <i class="fas fa-cogs me-2"></i>Detection Parameters
+                                        </button>
+                                    </h2>
+                                    <div id="parametersCollapse" class="accordion-collapse collapse">
+                                        <div class="accordion-body">
+                                            <!-- Area Constraints -->
+                                            <div class="row mb-3">
+                                                <div class="col-6">
+                                                    <label for="minArea" class="form-label">Min Area</label>
+                                                    <input type="number" class="form-control" id="minArea" 
+                                                           name="min_area" value="1000" min="100" max="10000">
+                                                </div>
+                                                <div class="col-6">
+                                                    <label for="maxArea" class="form-label">Max Area</label>
+                                                    <input type="number" class="form-control" id="maxArea" 
+                                                           name="max_area" value="50000" min="5000" max="200000">
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- Aspect Ratio -->
+                                            <div class="row mb-3">
+                                                <div class="col-6">
+                                                    <label for="minAspect" class="form-label">Min Aspect</label>
+                                                    <input type="number" class="form-control" id="minAspect" 
+                                                           name="min_aspect" value="2.0" min="1.0" max="5.0" step="0.1">
+                                                </div>
+                                                <div class="col-6">
+                                                    <label for="maxAspect" class="form-label">Max Aspect</label>
+                                                    <input type="number" class="form-control" id="maxAspect" 
+                                                           name="max_aspect" value="5.0" min="2.0" max="10.0" step="0.1">
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- Canny Edge Detection -->
+                                            <div class="row mb-3">
+                                                <div class="col-6">
+                                                    <label for="cannyLow" class="form-label">Canny Low</label>
+                                                    <input type="number" class="form-control" id="cannyLow" 
+                                                           name="canny_low" value="50" min="10" max="200">
+                                                </div>
+                                                <div class="col-6">
+                                                    <label for="cannyHigh" class="form-label">Canny High</label>
+                                                    <input type="number" class="form-control" id="cannyHigh" 
+                                                           name="canny_high" value="150" min="50" max="300">
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Submit Button -->
+                            <button type="submit" class="btn btn-primary w-100 mt-3" id="detectBtn">
+                                <i class="fas fa-search"></i> Detect License Plates
+                            </button>
+                        </form>
+                    </div>
+                </div>
+                
+                <!-- Results Panel -->
+                <div class="card mt-3" id="resultsCard" style="display: none;">
+                    <div class="card-header">
+                        <h5><i class="fas fa-chart-bar"></i> Detection Results</h5>
+                    </div>
+                    <div class="card-body" id="resultsContent">
+                        <!-- Results will be populated here -->
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Image Display -->
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-image"></i> Image Preview</h5>
+                    </div>
+                    <div class="card-body text-center">
+                        <!-- Upload Placeholder -->
+                        <div id="uploadPlaceholder" class="upload-placeholder">
+                            <i class="fas fa-cloud-upload-alt fa-4x text-muted mb-3"></i>
+                            <h4 class="text-muted">Upload an image to get started</h4>
+                            <p class="text-muted">Select an image file to detect license plates</p>
+                        </div>
+                        
+                        <!-- Original Image -->
+                        <div id="originalImageContainer" style="display: none;">
+                            <h6>Original Image</h6>
+                            <img id="originalImage" class="img-fluid rounded shadow-sm mb-3" alt="Original Image">
+                        </div>
+                        
+                        <!-- Result Image -->
+                        <div id="resultImageContainer" style="display: none;">
+                            <h6>Detection Results</h6>
+                            <img id="resultImage" class="img-fluid rounded shadow-sm" alt="Detection Results">
+                            <div class="mt-2">
+                                <a id="downloadLink" class="btn btn-success" download="license_plate_detection.jpg">
+                                    <i class="fas fa-download"></i> Download Result
+                                </a>
+                            </div>
+                        </div>
+                        
+                        <!-- Loading Spinner -->
+                        <div id="loadingSpinner" style="display: none;">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Processing...</span>
+                            </div>
+                            <p class="mt-2">Detecting license plates...</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Algorithm Info -->
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h5><i class="fas fa-info-circle"></i> Algorithm Information</h5>
+                    </div>
+                    <div class="card-body">
+                        <h6>Classical Computer Vision Approach</h6>
+                        <ul class="list-unstyled">
+                            <li><i class="fas fa-check text-success"></i> Grayscale conversion and histogram equalization</li>
+                            <li><i class="fas fa-check text-success"></i> Canny edge detection with morphological operations</li>
+                            <li><i class="fas fa-check text-success"></i> Contour analysis and rectangular shape filtering</li>
+                            <li><i class="fas fa-check text-success"></i> Aspect ratio filtering (2:1 to 5:1)</li>
+                            <li><i class="fas fa-check text-success"></i> Area-based filtering and confidence scoring</li>
+                            <li><i class="fas fa-check text-success"></i> Non-maximum suppression for overlapping detections</li>
+                        </ul>
+                        
+                        <div class="alert alert-info mt-3">
+                            <i class="fas fa-lightbulb"></i>
+                            <strong>Tip:</strong> For best results, use images with good lighting and clear license plates. 
+                            Adjust the detection parameters if needed for different image conditions.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast Container -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="errorToast" class="toast" role="alert">
+            <div class="toast-header bg-danger text-white">
+                <i class="fas fa-exclamation-triangle me-2"></i>
+                <strong class="me-auto">Error</strong>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="errorMessage">
+                <!-- Error message will be populated here -->
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
