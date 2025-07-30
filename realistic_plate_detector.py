@@ -16,6 +16,7 @@ class RealisticLicensePlateDetector:
         self.max_aspect = max_aspect
         self.canny_low = canny_low
         self.canny_high = canny_high
+        self.min_confidence = 0.5  # Higher minimum confidence to reduce false positives
         
         # Setup logging
         logging.basicConfig(level=logging.INFO)
@@ -111,10 +112,13 @@ class RealisticLicensePlateDetector:
             for plate in contour_plates:
                 plates.append(plate + ('contour-based',))
             
-            # Remove overlapping detections
+            # Remove overlapping detections and apply stricter filtering
             filtered_plates = self.remove_overlaps(plates)
             
-            return filtered_plates
+            # Apply minimum confidence filtering
+            high_confidence_plates = [plate for plate in filtered_plates if plate[4] >= self.min_confidence]
+            
+            return high_confidence_plates
             
         except Exception as e:
             self.logger.error(f"Detection error: {e}")
@@ -158,7 +162,7 @@ class RealisticLicensePlateDetector:
                     # Calculate confidence based on rectangularity and edge density
                     confidence = self.calculate_confidence(contour, original[y:y+h, x:x+w])
                     
-                    if confidence > 0.15:  # Minimum confidence threshold
+                    if confidence > 0.4:  # Higher confidence threshold to reduce false positives
                         plates.append((x, y, w, h, confidence))
             
             return plates
@@ -287,9 +291,13 @@ class RealisticLicensePlateDetector:
                     char_like_contours += 1
             
             # Score based on edge density and character-like shapes
-            text_score = min(edge_density * 2 + (char_like_contours / 10), 1.0)
+            # Require more evidence for higher scores
+            char_score = min(char_like_contours / 8, 0.5)  # Need at least 4 chars for 0.25 score
+            edge_score = min(edge_density * 3, 0.5)  # Higher edge density requirement
             
-            return text_score
+            text_score = char_score + edge_score
+            
+            return min(text_score, 1.0)
             
         except Exception as e:
             return 0.0
