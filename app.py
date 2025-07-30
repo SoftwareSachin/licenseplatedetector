@@ -41,8 +41,9 @@ def detect_plates():
         
         # Generate unique filename
         unique_id = str(uuid.uuid4())
-        filename = secure_filename(file.filename)
-        file_ext = filename.rsplit('.', 1)[1].lower()
+        original_filename = file.filename or 'uploaded_image'
+        filename = secure_filename(original_filename)
+        file_ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else 'jpg'
         input_filename = f"{unique_id}_input.{file_ext}"
         output_filename = f"{unique_id}_output.jpg"
         

@@ -97,8 +97,11 @@ class LicensePlateDetector:
             List of tuples (contour, bounding_rect, confidence_score)
         """
         valid_plates = []
+        area_filtered = 0
+        aspect_filtered = 0
+        rect_filtered = 0
         
-        for contour in contours:
+        for i, contour in enumerate(contours):
             # Get bounding rectangle
             x, y, w, h = cv2.boundingRect(contour)
             
@@ -106,12 +109,18 @@ class LicensePlateDetector:
             area = cv2.contourArea(contour)
             aspect_ratio = w / h if h > 0 else 0
             
+            # Debug logging for first few contours
+            if i < 10:
+                print(f"  Contour {i}: area={area:.0f}, aspect={aspect_ratio:.2f}, size=({w}x{h})")
+            
             # Filter by area
             if area < self.min_area or area > self.max_area:
+                area_filtered += 1
                 continue
                 
             # Filter by aspect ratio
             if aspect_ratio < self.min_aspect_ratio or aspect_ratio > self.max_aspect_ratio:
+                aspect_filtered += 1
                 continue
             
             # Check rectangularity (how close the contour is to a rectangle)
@@ -119,12 +128,16 @@ class LicensePlateDetector:
             rect_ratio = area / rect_area if rect_area > 0 else 0
             
             if rect_ratio < self.min_rect_ratio:
+                rect_filtered += 1
                 continue
             
             # Calculate confidence score based on multiple factors
             confidence = self.calculate_confidence(contour, area, aspect_ratio, rect_ratio)
             
             valid_plates.append((contour, (x, y, w, h), confidence))
+            print(f"  ✅ Valid plate candidate: area={area:.0f}, aspect={aspect_ratio:.2f}, rect_ratio={rect_ratio:.2f}, confidence={confidence:.3f}")
+        
+        print(f"📋 Filtering results: {area_filtered} area-filtered, {aspect_filtered} aspect-filtered, {rect_filtered} rectangularity-filtered")
         
         # Sort by confidence score (highest first)
         valid_plates.sort(key=lambda x: x[2], reverse=True)
@@ -221,6 +234,9 @@ class LicensePlateDetector:
         Returns:
             Tuple of (number_of_plates, list_of_confidence_scores, list_of_bounding_rectangles)
         """
+        print(f"🔍 Starting detection on image shape: {image.shape}")
+        print(f"📊 Detection parameters: area({self.min_area}-{self.max_area}), aspect({self.min_aspect_ratio}-{self.max_aspect_ratio}), canny({self.canny_low}-{self.canny_high})")
+        
         # Preprocess image
         gray = self.preprocess_image(image)
         
@@ -229,12 +245,15 @@ class LicensePlateDetector:
         
         # Find contours
         contours = self.find_contours(edges)
+        print(f"📐 Found {len(contours)} total contours")
         
         # Filter contours
         valid_plates = self.filter_contours(contours)
+        print(f"✅ {len(valid_plates)} contours passed initial filtering")
         
         # Remove overlapping detections
         final_plates = self.remove_overlapping_detections(valid_plates)
+        print(f"🎯 Final detection count: {len(final_plates)}")
         
         # Extract results
         num_plates = len(final_plates)
