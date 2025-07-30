@@ -439,7 +439,7 @@ class LicensePlateDetector:
     
     def detect_license_plates(self, image):
         """
-        Focused license plate detection targeting vehicle rear areas.
+        Precise license plate detection using MSER (Maximally Stable Extremal Regions) approach.
         
         Args:
             image: Input BGR image
@@ -447,55 +447,51 @@ class LicensePlateDetector:
         Returns:
             Tuple of (number_of_plates, list_of_confidence_scores, list_of_bounding_rectangles)
         """
-        print(f"🔍 Starting detection on image shape: {image.shape}")
-        print(f"📊 Detection parameters: area({self.min_area}-8000), aspect({self.min_aspect_ratio}-{self.max_aspect_ratio}), canny({self.canny_low}-{self.canny_high})")
+        print(f"🔍 Starting precise detection on image shape: {image.shape}")
         
         # Preprocess image
         gray = self.preprocess_image(image)
         
-        # Focus on lower 60% of image where license plates are typically located
+        # Focus on lower 70% of image where license plates are located
         height = gray.shape[0]
-        roi_start = int(height * 0.4)  # Start from 40% down from top
+        roi_start = int(height * 0.3)  # Start from 30% down from top
         gray_roi = gray[roi_start:, :]
         
-        print(f"🎯 Focusing on vehicle area: {gray_roi.shape} (lower 60% of image)")
+        print(f"🎯 Focusing on vehicle area: {gray_roi.shape} (lower 70% of image)")
         
-        # Apply more aggressive preprocessing for license plate detection
-        processed = self.enhance_license_plate_regions(gray_roi)
+        # Use multiple detection approaches
+        candidates = []
         
-        # Find contours in the processed ROI
-        contours = self.find_license_plate_contours(processed)
+        # Method 1: MSER-based text region detection
+        mser_candidates = self.detect_with_mser(gray_roi, roi_start)
+        candidates.extend(mser_candidates)
+        print(f"📍 MSER detection found {len(mser_candidates)} candidates")
         
-        # Adjust contour coordinates back to full image
-        adjusted_contours = []
-        for contour in contours:
-            adjusted_contour = contour.copy()
-            adjusted_contour[:, :, 1] += roi_start  # Add ROI offset to y coordinates
-            adjusted_contours.append(adjusted_contour)
+        # Method 2: Sobel edge-based detection
+        sobel_candidates = self.detect_with_sobel(gray_roi, roi_start)
+        candidates.extend(sobel_candidates)
+        print(f"📊 Sobel detection found {len(sobel_candidates)} candidates")
         
-        print(f"📐 Found {len(adjusted_contours)} contours in vehicle area")
+        # Method 3: Adaptive threshold detection
+        adaptive_candidates = self.detect_with_adaptive_threshold(gray_roi, roi_start)
+        candidates.extend(adaptive_candidates)
+        print(f"🔧 Adaptive detection found {len(adaptive_candidates)} candidates")
         
-        # Filter with strict license plate criteria
-        valid_plates = self.filter_strict_license_plates(adjusted_contours, gray)
-        print(f"✅ {len(valid_plates)} contours passed strict filtering")
-        
-        # If no valid plates found, try simple rectangular detection
-        if len(valid_plates) == 0:
-            print("🔄 No plates found, trying simple rectangular detection...")
-            rect_plates = self.simple_rectangle_detection(gray, roi_start)
-            valid_plates.extend(rect_plates)
-            print(f"🔍 Rectangle detection found {len(rect_plates)} additional candidates")
-        
-        # Remove overlapping detections
-        final_plates = self.remove_overlapping_detections(valid_plates)
-        print(f"🎯 Final detection count: {len(final_plates)}")
-        
-        # Extract results
-        num_plates = len(final_plates)
-        confidence_scores = [conf for _, _, conf in final_plates]
-        bounding_rects = [rect for _, rect, _ in final_plates]
-        
-        return num_plates, confidence_scores, bounding_rects
+        # Combine and filter all candidates
+        if candidates:
+            # Remove duplicates and overlaps
+            filtered_candidates = self.filter_and_merge_candidates(candidates, gray)
+            print(f"✅ {len(filtered_candidates)} candidates after filtering")
+            
+            # Extract results
+            num_plates = len(filtered_candidates)
+            confidence_scores = [conf for _, _, conf in filtered_candidates]
+            bounding_rects = [rect for _, rect, _ in filtered_candidates]
+            
+            return num_plates, confidence_scores, bounding_rects
+        else:
+            print("❌ No license plates detected")
+            return 0, [], []
     
     def enhance_license_plate_regions(self, gray_roi):
         """
@@ -1005,6 +1001,208 @@ class LicensePlateDetector:
             
         except:
             return False
+    
+    def detect_with_mser(self, gray_roi, roi_start):
+        """
+        Use MSER (Maximally Stable Extremal Regions) to detect text regions.
+        
+        Args:
+            gray_roi: Grayscale ROI
+            roi_start: ROI start position
+            
+        Returns:
+            List of candidates
+        """
+        try:
+            # Create MSER detector
+            mser = cv2.MSER_create(
+                min_area=100,
+                max_area=3000,
+                delta=5
+            )
+            
+            # Detect regions
+            regions, _ = mser.detectRegions(gray_roi)
+            
+            candidates = []
+            for region in regions:
+                if len(region) < 10:  # Skip very small regions
+                    continue
+                    
+                # Get bounding rectangle
+                x, y, w, h = cv2.boundingRect(region.reshape(-1, 1, 2))
+                
+                # License plate size filtering
+                aspect_ratio = w / h if h > 0 else 0
+                if (60 <= w <= 200 and 15 <= h <= 50 and 
+                    2.0 <= aspect_ratio <= 5.0):
+                    
+                    # Convert coordinates to full image
+                    full_y = y + roi_start
+                    
+                    # Create contour
+                    contour = np.array([
+                        [[x, full_y]], [[x + w, full_y]], 
+                        [[x + w, full_y + h]], [[x, full_y + h]]
+                    ], dtype=np.int32)
+                    
+                    confidence = 0.7  # Base confidence for MSER
+                    candidates.append((contour, (x, full_y, w, h), confidence))
+            
+            return candidates
+            
+        except Exception as e:
+            print(f"MSER detection error: {e}")
+            return []
+    
+    def detect_with_sobel(self, gray_roi, roi_start):
+        """
+        Use Sobel edge detection to find license plate regions.
+        
+        Args:
+            gray_roi: Grayscale ROI
+            roi_start: ROI start position
+            
+        Returns:
+            List of candidates
+        """
+        try:
+            # Apply Sobel operators
+            sobelx = cv2.Sobel(gray_roi, cv2.CV_64F, 1, 0, ksize=3)
+            sobely = cv2.Sobel(gray_roi, cv2.CV_64F, 0, 1, ksize=3)
+            
+            # Calculate gradient magnitude
+            magnitude = np.sqrt(sobelx**2 + sobely**2)
+            magnitude = np.uint8(magnitude / magnitude.max() * 255)
+            
+            # Threshold and morphological operations
+            _, thresh = cv2.threshold(magnitude, 50, 255, cv2.THRESH_BINARY)
+            
+            # Horizontal morphological closing to connect text
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
+            closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+            
+            # Find contours
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            candidates = []
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                area = cv2.contourArea(contour)
+                aspect_ratio = w / h if h > 0 else 0
+                
+                # License plate filtering
+                if (800 <= area <= 4000 and 
+                    2.0 <= aspect_ratio <= 5.0 and
+                    60 <= w <= 180 and 15 <= h <= 45):
+                    
+                    full_y = y + roi_start
+                    confidence = 0.6  # Base confidence for Sobel
+                    candidates.append((contour, (x, full_y, w, h), confidence))
+            
+            return candidates
+            
+        except Exception as e:
+            print(f"Sobel detection error: {e}")
+            return []
+    
+    def detect_with_adaptive_threshold(self, gray_roi, roi_start):
+        """
+        Use adaptive thresholding to detect license plate regions.
+        
+        Args:
+            gray_roi: Grayscale ROI
+            roi_start: ROI start position
+            
+        Returns:
+            List of candidates
+        """
+        try:
+            # Apply adaptive threshold
+            adaptive = cv2.adaptiveThreshold(
+                gray_roi, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                cv2.THRESH_BINARY, 11, 2
+            )
+            
+            # Morphological operations
+            kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 1))
+            kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 5))
+            
+            processed = cv2.morphologyEx(adaptive, cv2.MORPH_CLOSE, kernel_h)
+            processed = cv2.morphologyEx(processed, cv2.MORPH_OPEN, kernel_v)
+            
+            # Find contours
+            contours, _ = cv2.findContours(processed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            candidates = []
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                area = cv2.contourArea(contour)
+                aspect_ratio = w / h if h > 0 else 0
+                
+                # License plate filtering
+                if (500 <= area <= 3000 and 
+                    2.0 <= aspect_ratio <= 5.0 and
+                    50 <= w <= 160 and 12 <= h <= 40):
+                    
+                    full_y = y + roi_start
+                    confidence = 0.5  # Base confidence for adaptive
+                    candidates.append((contour, (x, full_y, w, h), confidence))
+            
+            return candidates
+            
+        except Exception as e:
+            print(f"Adaptive threshold detection error: {e}")
+            return []
+    
+    def filter_and_merge_candidates(self, candidates, full_gray_image):
+        """
+        Filter and merge candidates from multiple detection methods.
+        
+        Args:
+            candidates: List of all candidates
+            full_gray_image: Full grayscale image
+            
+        Returns:
+            Filtered list of best candidates
+        """
+        if not candidates:
+            return []
+        
+        # Sort by confidence
+        candidates.sort(key=lambda x: x[2], reverse=True)
+        
+        # Remove overlapping candidates
+        filtered = []
+        for candidate in candidates:
+            contour, rect, conf = candidate
+            x, y, w, h = rect
+            
+            # Check overlap with existing candidates
+            overlaps = False
+            for _, (ex, ey, ew, eh), _ in filtered:
+                # Calculate overlap
+                overlap_x = max(0, min(x + w, ex + ew) - max(x, ex))
+                overlap_y = max(0, min(y + h, ey + eh) - max(y, ey))
+                overlap_area = overlap_x * overlap_y
+                
+                area1 = w * h
+                area2 = ew * eh
+                
+                if overlap_area > 0.3 * min(area1, area2):
+                    overlaps = True
+                    break
+            
+            if not overlaps:
+                # Validate the candidate
+                region = full_gray_image[y:y+h, x:x+w]
+                if self.validate_license_plate_region(region):
+                    filtered.append(candidate)
+                elif len(filtered) == 0 and len(filtered) < 3:
+                    # Accept some candidates even without validation
+                    filtered.append((contour, rect, conf * 0.8))
+        
+        return filtered[:2]  # Return up to 2 best candidates
     
     def draw_detections(self, image, bounding_rects, confidence_scores):
         """
