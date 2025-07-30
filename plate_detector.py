@@ -8,8 +8,8 @@ class LicensePlateDetector:
     Detects rectangular regions with high-contrast edges and appropriate aspect ratios.
     """
     
-    def __init__(self, min_area=1000, max_area=50000, min_aspect_ratio=2.0, max_aspect_ratio=5.0,
-                 canny_low=50, canny_high=150, min_rect_ratio=0.75):
+    def __init__(self, min_area=800, max_area=50000, min_aspect_ratio=1.2, max_aspect_ratio=6.0,
+                 canny_low=50, canny_high=150, min_rect_ratio=0.6):
         """
         Initialize the license plate detector with configurable parameters.
         
@@ -43,11 +43,12 @@ class LicensePlateDetector:
         # Convert to grayscale
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
-        # Apply Gaussian blur to reduce noise
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        # Apply bilateral filter to reduce noise while preserving edges
+        filtered = cv2.bilateralFilter(gray, 11, 17, 17)
         
-        # Apply histogram equalization to improve contrast
-        equalized = cv2.equalizeHist(blurred)
+        # Apply adaptive histogram equalization for better local contrast
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        equalized = clahe.apply(filtered)
         
         return equalized
     
@@ -65,17 +66,22 @@ class LicensePlateDetector:
         edges = cv2.Canny(gray_image, self.canny_low, self.canny_high)
         
         # Apply morphological operations to close gaps in edges
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+        kernel_rect = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_rect)
         
-        # Dilate to strengthen edges
-        edges = cv2.dilate(edges, kernel, iterations=1)
+        # Use a horizontal kernel to connect horizontal edges (license plates are horizontal)
+        horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 1))
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, horizontal_kernel)
+        
+        # Use a small rectangular kernel for final cleanup
+        final_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 2))
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, final_kernel)
         
         return edges
     
     def find_contours(self, edge_image):
         """
-        Find contours in the edge image.
+        Find contours in the edge image using multiple approaches.
         
         Args:
             edge_image: Binary edge image
@@ -83,8 +89,17 @@ class LicensePlateDetector:
         Returns:
             List of contours
         """
-        contours, _ = cv2.findContours(edge_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        return contours
+        # Try multiple contour detection approaches
+        contours1, _ = cv2.findContours(edge_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours2, _ = cv2.findContours(edge_image, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Combine and deduplicate contours
+        all_contours = list(contours1) + list(contours2)
+        
+        # Remove very small contours early
+        filtered_contours = [c for c in all_contours if cv2.contourArea(c) > 100]
+        
+        return filtered_contours
     
     def filter_contours(self, contours):
         """
