@@ -479,6 +479,13 @@ class LicensePlateDetector:
         valid_plates = self.filter_strict_license_plates(adjusted_contours, gray)
         print(f"✅ {len(valid_plates)} contours passed strict filtering")
         
+        # If no valid plates found, try alternative edge-based detection
+        if len(valid_plates) == 0:
+            print("🔄 No plates found, trying edge-based detection...")
+            edge_plates = self.fallback_edge_detection(gray, roi_start)
+            valid_plates.extend(edge_plates)
+            print(f"🔍 Edge detection found {len(edge_plates)} additional candidates")
+        
         # Remove overlapping detections
         final_plates = self.remove_overlapping_detections(valid_plates)
         print(f"🎯 Final detection count: {len(final_plates)}")
@@ -558,17 +565,24 @@ class LicensePlateDetector:
             if i < 5:  # Debug first few
                 print(f"  Candidate {i}: area={area:.0f}, aspect={aspect_ratio:.2f}, size=({w}x{h}), pos=({x},{y})")
             
-            # Strict license plate criteria
-            # Area: typical license plates are 1000-6000 pixels
-            if area < 1000 or area > 6000:
+            # Debug output for filtering
+            if i < 5:
+                print(f"    Filtering: area={area:.0f} (want 600-15000), aspect={aspect_ratio:.2f} (want 2.0-5.0), size=({w}x{h})")
+            
+            # More lenient license plate criteria
+            # Area: expanded range for license plates in different image sizes
+            if area < 600 or area > 15000:
+                if i < 5: print(f"    ❌ Rejected by area")
                 continue
                 
-            # Aspect ratio: license plates are 1.8:1 to 4.5:1
-            if aspect_ratio < 1.8 or aspect_ratio > 4.5:
+            # Aspect ratio: license plates are typically 2:1 to 5:1
+            if aspect_ratio < 2.0 or aspect_ratio > 5.0:
+                if i < 5: print(f"    ❌ Rejected by aspect ratio")
                 continue
                 
-            # Dimensions: reasonable width and height for license plates
-            if w < 60 or w > 200 or h < 20 or h > 60:
+            # Dimensions: more flexible for different image scales
+            if w < 50 or w > 300 or h < 15 or h > 80:
+                if i < 5: print(f"    ❌ Rejected by dimensions")
                 continue
             
             # Check rectangularity
@@ -675,6 +689,76 @@ class LicensePlateDetector:
             confidence += 0.05
             
         return min(confidence, 1.0)
+    
+    def fallback_edge_detection(self, full_gray_image, roi_start):
+        """
+        Fallback edge-based detection method for license plates.
+        
+        Args:
+            full_gray_image: Full grayscale image
+            roi_start: Start position of ROI
+            
+        Returns:
+            List of license plate candidates
+        """
+        height = full_gray_image.shape[0]
+        roi_end = height
+        
+        # Work on the ROI
+        roi = full_gray_image[roi_start:roi_end, :]
+        
+        # Apply Gaussian blur
+        blurred = cv2.GaussianBlur(roi, (5, 5), 0)
+        
+        # Edge detection with multiple thresholds
+        edges1 = cv2.Canny(blurred, 30, 100)
+        edges2 = cv2.Canny(blurred, 50, 150)
+        combined_edges = cv2.bitwise_or(edges1, edges2)
+        
+        # Morphological operations to connect edges
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        closed = cv2.morphologyEx(combined_edges, cv2.MORPH_CLOSE, kernel)
+        
+        # Find contours
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Filter contours for license plate characteristics
+        candidates = []
+        
+        for i, contour in enumerate(contours):
+            x, y, w, h = cv2.boundingRect(contour)
+            area = cv2.contourArea(contour)
+            aspect_ratio = w / h if h > 0 else 0
+            
+            # Adjust coordinates back to full image
+            full_y = y + roi_start
+            
+            if i < 3:  # Debug first few
+                print(f"  Edge candidate {i}: area={area:.0f}, aspect={aspect_ratio:.2f}, size=({w}x{h}), pos=({x},{full_y})")
+            
+            # License plate criteria (more lenient for fallback)
+            if (800 <= area <= 8000 and 
+                2.0 <= aspect_ratio <= 5.0 and 
+                50 <= w <= 250 and 
+                15 <= h <= 70):
+                
+                # Simple confidence based on area and aspect ratio
+                confidence = 0.3  # Base confidence for fallback method
+                
+                # Bonus for good aspect ratio
+                if 2.5 <= aspect_ratio <= 4.0:
+                    confidence += 0.2
+                
+                # Bonus for reasonable size
+                if 1000 <= area <= 4000:
+                    confidence += 0.1
+                
+                candidates.append((contour, (x, full_y, w, h), confidence))
+                print(f"  ✅ Edge candidate accepted: conf={confidence:.3f}")
+        
+        # Sort by confidence and return best candidates
+        candidates.sort(key=lambda x: x[2], reverse=True)
+        return candidates[:2]  # Return up to 2 best candidates
     
     def draw_detections(self, image, bounding_rects, confidence_scores):
         """
