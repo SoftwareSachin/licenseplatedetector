@@ -1022,7 +1022,7 @@ class LicensePlateDetector:
         """
         try:
             # Create MSER detector with tighter parameters for license plates
-            mser = cv2.MSER_create(
+            mser = cv2.MSER.create(
                 min_area=300,    # Minimum area for license plate text
                 max_area=1800,   # Maximum area to avoid large regions
                 delta=8,         # Stability parameter
@@ -1039,7 +1039,8 @@ class LicensePlateDetector:
                     continue
                     
                 # Get bounding rectangle
-                x, y, w, h = cv2.boundingRect(region.reshape(-1, 1, 2))
+                region_array = np.array(region, dtype=np.int32).reshape(-1, 1, 2)
+                x, y, w, h = cv2.boundingRect(region_array)
                 aspect_ratio = w / h if h > 0 else 0
                 
                 # Strict license plate constraints
@@ -1145,7 +1146,8 @@ class LicensePlateDetector:
             magnitude = np.uint8(magnitude / magnitude.max() * 255)
             
             # Threshold and morphological operations
-            _, thresh = cv2.threshold(magnitude, 50, 255, cv2.THRESH_BINARY)
+            magnitude_uint8 = magnitude.astype(np.uint8)
+            _, thresh = cv2.threshold(magnitude_uint8, 50, 255, cv2.THRESH_BINARY)
             
             # Horizontal morphological closing to connect text
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
@@ -1369,7 +1371,7 @@ class LicensePlateDetector:
             edge_ratio = np.count_nonzero(edges) / edges.size
             
             # Check contrast
-            std_intensity = np.std(region)
+            std_intensity = float(np.std(region))
             contrast_score = min(std_intensity / 40.0, 1.0)
             
             # Combine scores

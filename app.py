@@ -1,13 +1,21 @@
 import os
 from flask import Flask, render_template, request, jsonify, send_file, url_for
 from werkzeug.utils import secure_filename
+from werkzeug.middleware.proxy_fix import ProxyFix
 import cv2
 import numpy as np
 from plate_detector import LicensePlateDetector
 import uuid
 import time
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SESSION_SECRET", "dev-key-change-in-production")
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)  # needed for url_for to generate with https
+
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['OUTPUT_FOLDER'] = 'outputs'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size

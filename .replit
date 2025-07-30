@@ -1,8 +1,8 @@
-modules = ["python-3.11"]
+modules = ["python-3.11", "nodejs-20", "web"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["libGL", "libGLU"]
+packages = ["libGL", "libGLU", "openssl", "postgresql"]
 
 [workflows]
 runButton = "Project"
@@ -16,6 +16,10 @@ author = "agent"
 task = "workflow.run"
 args = "License Plate Detector Server"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
 [[workflows.workflow]]
 name = "License Plate Detector Server"
 author = "agent"
@@ -25,6 +29,19 @@ task = "shell.exec"
 args = "pip install flask opencv-python numpy werkzeug && python app.py"
 waitForPort = 5000
 
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "gunicorn --bind 0.0.0.0:5000 --reuse-port --reload main:app"
+waitForPort = 5000
+
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[deployment]
+deploymentTarget = "autoscale"
+run = ["gunicorn", "--bind", "0.0.0.0:5000", "main:app"]
