@@ -1157,52 +1157,165 @@ class LicensePlateDetector:
     
     def filter_and_merge_candidates(self, candidates, full_gray_image):
         """
-        Filter and merge candidates from multiple detection methods.
+        Filter and merge candidates to find the single best license plate.
         
         Args:
             candidates: List of all candidates
             full_gray_image: Full grayscale image
             
         Returns:
-            Filtered list of best candidates
+            Filtered list with single best candidate
         """
         if not candidates:
             return []
         
-        # Sort by confidence
-        candidates.sort(key=lambda x: x[2], reverse=True)
+        print(f"    Processing {len(candidates)} candidates for filtering")
         
-        # Remove overlapping candidates
-        filtered = []
-        for candidate in candidates:
-            contour, rect, conf = candidate
+        # First, validate all candidates and score them
+        scored_candidates = []
+        for i, (contour, rect, conf) in enumerate(candidates):
             x, y, w, h = rect
+            region = full_gray_image[y:y+h, x:x+w]
             
-            # Check overlap with existing candidates
-            overlaps = False
-            for _, (ex, ey, ew, eh), _ in filtered:
-                # Calculate overlap
-                overlap_x = max(0, min(x + w, ex + ew) - max(x, ex))
-                overlap_y = max(0, min(y + h, ey + eh) - max(y, ey))
-                overlap_area = overlap_x * overlap_y
-                
-                area1 = w * h
-                area2 = ew * eh
-                
-                if overlap_area > 0.3 * min(area1, area2):
-                    overlaps = True
-                    break
+            # Enhanced scoring system
+            validation_score = 1.0 if self.validate_license_plate_region(region) else 0.3
+            size_score = self.score_license_plate_size(w, h)
+            position_score = self.score_license_plate_position(y, full_gray_image.shape[0])
+            text_quality_score = self.score_text_quality(region)
             
-            if not overlaps:
-                # Validate the candidate
-                region = full_gray_image[y:y+h, x:x+w]
-                if self.validate_license_plate_region(region):
-                    filtered.append(candidate)
-                elif len(filtered) == 0 and len(filtered) < 3:
-                    # Accept some candidates even without validation
-                    filtered.append((contour, rect, conf * 0.8))
+            # Combined score
+            final_score = (conf * 0.3 + validation_score * 0.3 + 
+                          size_score * 0.2 + position_score * 0.1 + text_quality_score * 0.1)
+            
+            scored_candidates.append((contour, rect, final_score))
+            print(f"    Candidate {i}: pos=({x},{y}), size=({w}x{h}), score={final_score:.3f}")
         
-        return filtered[:2]  # Return up to 2 best candidates
+        # Sort by final score
+        scored_candidates.sort(key=lambda x: x[2], reverse=True)
+        
+        # Group nearby candidates (they might be parts of the same license plate)
+        grouped_candidates = self.group_nearby_candidates(scored_candidates)
+        
+        # Select the best group/candidate
+        if grouped_candidates:
+            best_group = grouped_candidates[0]
+            if len(best_group) > 1:
+                # Merge the group into a single bounding box
+                merged_candidate = self.merge_candidate_group(best_group)
+                return [merged_candidate]
+            else:
+                return [best_group[0]]
+        
+        return []
+    
+    def score_license_plate_size(self, width, height):
+        """Score based on typical license plate dimensions."""
+        aspect_ratio = width / height if height > 0 else 0
+        
+        # Ideal license plate: width 120-160, height 30-40, aspect ratio 3-4
+        if 120 <= width <= 160 and 30 <= height <= 40 and 3.0 <= aspect_ratio <= 4.0:
+            return 1.0
+        elif 100 <= width <= 180 and 25 <= height <= 45 and 2.5 <= aspect_ratio <= 4.5:
+            return 0.8
+        elif 80 <= width <= 200 and 20 <= height <= 50 and 2.0 <= aspect_ratio <= 5.0:
+            return 0.6
+        else:
+            return 0.3
+    
+    def score_license_plate_position(self, y_pos, image_height):
+        """Score based on typical license plate position on vehicle."""
+        # License plates are typically in the lower 60% of the image
+        relative_pos = y_pos / image_height
+        if 0.6 <= relative_pos <= 0.9:  # Ideal position
+            return 1.0
+        elif 0.5 <= relative_pos <= 0.95:  # Good position
+            return 0.8
+        else:
+            return 0.4
+    
+    def score_text_quality(self, region):
+        """Score the quality of text in the region."""
+        if region.size == 0:
+            return 0.0
+            
+        try:
+            # Check edge density
+            edges = cv2.Canny(region, 50, 150)
+            edge_ratio = np.count_nonzero(edges) / edges.size
+            
+            # Check contrast
+            std_intensity = np.std(region)
+            contrast_score = min(std_intensity / 40.0, 1.0)
+            
+            # Combine scores
+            return (edge_ratio * 5.0 + contrast_score) / 2.0
+        except:
+            return 0.3
+    
+    def group_nearby_candidates(self, candidates):
+        """Group candidates that are close to each other (likely same license plate)."""
+        if len(candidates) <= 1:
+            return [candidates]
+        
+        groups = []
+        used = set()
+        
+        for i, (contour1, rect1, score1) in enumerate(candidates):
+            if i in used:
+                continue
+                
+            x1, y1, w1, h1 = rect1
+            group = [(contour1, rect1, score1)]
+            used.add(i)
+            
+            # Find nearby candidates
+            for j, (contour2, rect2, score2) in enumerate(candidates[i+1:], i+1):
+                if j in used:
+                    continue
+                    
+                x2, y2, w2, h2 = rect2
+                
+                # Check if candidates are close (horizontally or vertically adjacent)
+                horizontal_distance = abs(x1 - x2)
+                vertical_distance = abs(y1 - y2)
+                
+                if (horizontal_distance < max(w1, w2) * 1.5 and 
+                    vertical_distance < max(h1, h2) * 1.5):
+                    group.append((contour2, rect2, score2))
+                    used.add(j)
+            
+            groups.append(group)
+        
+        # Sort groups by best score in each group
+        groups.sort(key=lambda g: max(score for _, _, score in g), reverse=True)
+        return groups
+    
+    def merge_candidate_group(self, group):
+        """Merge a group of candidates into a single bounding box."""
+        if len(group) == 1:
+            return group[0]
+        
+        # Find bounding box that encompasses all candidates
+        min_x = min(x for _, (x, y, w, h), _ in group)
+        min_y = min(y for _, (x, y, w, h), _ in group)
+        max_x = max(x + w for _, (x, y, w, h), _ in group)
+        max_y = max(y + h for _, (x, y, w, h), _ in group)
+        
+        merged_w = max_x - min_x
+        merged_h = max_y - min_y
+        
+        # Use the highest confidence from the group
+        best_confidence = max(score for _, _, score in group)
+        
+        # Create merged contour
+        merged_contour = np.array([
+            [[min_x, min_y]], [[max_x, min_y]], 
+            [[max_x, max_y]], [[min_x, max_y]]
+        ], dtype=np.int32)
+        
+        print(f"    Merged group into: pos=({min_x},{min_y}), size=({merged_w}x{merged_h}), conf={best_confidence:.3f}")
+        
+        return (merged_contour, (min_x, min_y, merged_w, merged_h), best_confidence)
     
     def draw_detections(self, image, bounding_rects, confidence_scores):
         """
