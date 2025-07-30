@@ -32,7 +32,7 @@ class LicensePlateDetector:
         
     def preprocess_image(self, image):
         """
-        Preprocess the input image for license plate detection.
+        Preprocess the input image for license plate detection with text-focused approach.
         
         Args:
             image: Input BGR image
@@ -47,10 +47,38 @@ class LicensePlateDetector:
         filtered = cv2.bilateralFilter(gray, 11, 17, 17)
         
         # Apply adaptive histogram equalization for better local contrast
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
         equalized = clahe.apply(filtered)
         
         return equalized
+    
+    def detect_text_regions(self, gray_image):
+        """
+        Detect text-like regions using morphological operations.
+        This helps identify areas with characters (like license plates).
+        
+        Args:
+            gray_image: Preprocessed grayscale image
+            
+        Returns:
+            Binary image with text regions highlighted
+        """
+        # Apply morphological gradient to highlight text boundaries
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        grad = cv2.morphologyEx(gray_image, cv2.MORPH_GRADIENT, kernel)
+        
+        # Threshold to get binary image
+        _, text_thresh = cv2.threshold(grad, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Connect text characters horizontally
+        horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 1))
+        connected = cv2.morphologyEx(text_thresh, cv2.MORPH_CLOSE, horizontal_kernel)
+        
+        # Fill small gaps
+        vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3))
+        connected = cv2.morphologyEx(connected, cv2.MORPH_CLOSE, vertical_kernel)
+        
+        return connected
     
     def detect_edges(self, gray_image):
         """
@@ -100,6 +128,162 @@ class LicensePlateDetector:
         filtered_contours = [c for c in all_contours if cv2.contourArea(c) > 100]
         
         return filtered_contours
+    
+    def filter_license_plate_contours(self, contours, gray_image):
+        """
+        Advanced filtering specifically for license plate characteristics including text analysis.
+        
+        Args:
+            contours: List of contours to filter
+            gray_image: Original grayscale image for text analysis
+            
+        Returns:
+            List of tuples (contour, bounding_rect, confidence_score)
+        """
+        valid_plates = []
+        area_filtered = 0
+        aspect_filtered = 0
+        text_filtered = 0
+        
+        for i, contour in enumerate(contours):
+            # Get bounding rectangle
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            # Calculate area and aspect ratio
+            area = cv2.contourArea(contour)
+            aspect_ratio = w / h if h > 0 else 0
+            
+            # Debug logging for first few contours
+            if i < 10:
+                print(f"  Contour {i}: area={area:.0f}, aspect={aspect_ratio:.2f}, size=({w}x{h})")
+            
+            # Strict area filtering for license plates
+            if area < 800 or area > 8000:  # License plates are typically in this range
+                area_filtered += 1
+                continue
+                
+            # License plate aspect ratio filtering - more specific
+            if aspect_ratio < 1.5 or aspect_ratio > 5.0:
+                aspect_filtered += 1
+                continue
+            
+            # Size filtering - license plates have reasonable dimensions
+            if w < 50 or h < 15 or w > 300 or h > 100:
+                aspect_filtered += 1
+                continue
+            
+            # Text density analysis - license plates should have text-like patterns
+            roi = gray_image[y:y+h, x:x+w]
+            if roi.size == 0:
+                continue
+                
+            # Check for text-like characteristics
+            text_score = self.analyze_text_characteristics(roi)
+            if text_score < 0.3:  # Minimum text-like score
+                text_filtered += 1
+                continue
+            
+            # Check rectangularity
+            rect_area = w * h
+            rect_ratio = area / rect_area if rect_area > 0 else 0
+            
+            if rect_ratio < 0.6:  # License plates should be reasonably rectangular
+                continue
+            
+            # Calculate enhanced confidence score
+            confidence = self.calculate_license_plate_confidence(contour, area, aspect_ratio, rect_ratio, text_score)
+            
+            valid_plates.append((contour, (x, y, w, h), confidence))
+            print(f"  ✅ License plate candidate: area={area:.0f}, aspect={aspect_ratio:.2f}, text_score={text_score:.2f}, confidence={confidence:.3f}")
+        
+        print(f"📋 Advanced filtering: {area_filtered} area-filtered, {aspect_filtered} size-filtered, {text_filtered} text-filtered")
+        
+        # Sort by confidence score (highest first)
+        valid_plates.sort(key=lambda x: x[2], reverse=True)
+        
+        return valid_plates
+    
+    def analyze_text_characteristics(self, roi):
+        """
+        Analyze if a region has text-like characteristics typical of license plates.
+        
+        Args:
+            roi: Region of interest (grayscale image patch)
+            
+        Returns:
+            Text-like score between 0 and 1
+        """
+        if roi.size == 0:
+            return 0.0
+        
+        # Resize ROI for consistent analysis
+        roi_height = 32
+        roi_width = int(roi.shape[1] * roi_height / roi.shape[0])
+        if roi_width < 60:  # Minimum width for license plate text
+            return 0.0
+            
+        resized_roi = cv2.resize(roi, (roi_width, roi_height))
+        
+        # Apply threshold to get binary image
+        _, binary = cv2.threshold(resized_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Count transitions (text has many vertical transitions)
+        transitions = 0
+        for col in range(1, binary.shape[1]):
+            column_diff = cv2.absdiff(binary[:, col-1], binary[:, col])
+            transitions += np.count_nonzero(column_diff)
+        
+        # Normalize by image size
+        transition_density = transitions / (binary.shape[0] * binary.shape[1])
+        
+        # Edge density (text regions have more edges)
+        edges = cv2.Canny(resized_roi, 50, 150)
+        edge_density = np.count_nonzero(edges) / edges.size
+        
+        # Horizontal line detection (license plates often have horizontal borders)
+        horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 1))
+        horizontal_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, horizontal_kernel)
+        horizontal_score = np.count_nonzero(horizontal_lines) / horizontal_lines.size
+        
+        # Combine scores
+        text_score = (transition_density * 0.4 + edge_density * 0.4 + horizontal_score * 0.2)
+        return min(text_score, 1.0)
+    
+    def calculate_license_plate_confidence(self, contour, area, aspect_ratio, rect_ratio, text_score):
+        """
+        Calculate confidence score specifically for license plate detection.
+        
+        Args:
+            contour: The contour
+            area: Contour area
+            aspect_ratio: Width/height ratio
+            rect_ratio: Contour area / bounding rectangle area
+            text_score: Text-like characteristics score
+            
+        Returns:
+            Confidence score between 0 and 1
+        """
+        # Start with rectangularity
+        confidence = rect_ratio * 0.3
+        
+        # Text score is very important for license plates
+        confidence += text_score * 0.4
+        
+        # Aspect ratio scoring - typical license plates are 2:1 to 4:1
+        if 2.0 <= aspect_ratio <= 4.0:
+            confidence += 0.2  # Perfect aspect ratio
+        elif 1.5 <= aspect_ratio <= 2.0:
+            confidence += 0.1  # Acceptable square-ish plates
+        else:
+            confidence += 0.05  # Non-standard but possible
+        
+        # Size scoring - typical license plate areas
+        if 1500 <= area <= 5000:
+            confidence += 0.1  # Ideal size
+        elif 800 <= area <= 1500 or 5000 <= area <= 8000:
+            confidence += 0.05  # Acceptable size
+        
+        return min(confidence, 1.0)
     
     def filter_contours(self, contours):
         """
@@ -264,7 +448,7 @@ class LicensePlateDetector:
     
     def detect_license_plates(self, image):
         """
-        Main detection pipeline for license plates.
+        Main detection pipeline for license plates using text-focused approach.
         
         Args:
             image: Input BGR image
@@ -273,21 +457,27 @@ class LicensePlateDetector:
             Tuple of (number_of_plates, list_of_confidence_scores, list_of_bounding_rectangles)
         """
         print(f"🔍 Starting detection on image shape: {image.shape}")
-        print(f"📊 Detection parameters: area({self.min_area}-{self.max_area}), aspect({self.min_aspect_ratio}-{self.max_aspect_ratio}), canny({self.canny_low}-{self.canny_high})")
+        print(f"📊 Detection parameters: area({self.min_area}-15000), aspect({self.min_aspect_ratio}-{self.max_aspect_ratio}), canny({self.canny_low}-{self.canny_high})")
         
         # Preprocess image
         gray = self.preprocess_image(image)
         
-        # Detect edges
+        # Detect text regions (license plates contain text)
+        text_regions = self.detect_text_regions(gray)
+        
+        # Also use traditional edge detection
         edges = self.detect_edges(gray)
         
-        # Find contours
-        contours = self.find_contours(edges)
+        # Combine text regions and edge detection
+        combined = cv2.bitwise_or(text_regions, edges)
+        
+        # Find contours from combined approach
+        contours = self.find_contours(combined)
         print(f"📐 Found {len(contours)} total contours")
         
-        # Filter contours
-        valid_plates = self.filter_contours(contours)
-        print(f"✅ {len(valid_plates)} contours passed initial filtering")
+        # Filter contours with stricter license plate criteria
+        valid_plates = self.filter_license_plate_contours(contours, gray)
+        print(f"✅ {len(valid_plates)} contours passed license plate filtering")
         
         # Remove overlapping detections
         final_plates = self.remove_overlapping_detections(valid_plates)
@@ -302,7 +492,7 @@ class LicensePlateDetector:
     
     def draw_detections(self, image, bounding_rects, confidence_scores):
         """
-        Draw bounding boxes around detected license plates.
+        Create output showing detected license plates - either cropped plates or full image with boxes.
         
         Args:
             image: Input BGR image
@@ -310,27 +500,97 @@ class LicensePlateDetector:
             confidence_scores: List of confidence scores
             
         Returns:
-            Image with bounding boxes drawn
+            Image with license plate extractions or bounding boxes
         """
-        result_image = image.copy()
+        if len(bounding_rects) == 0:
+            return image
         
-        for i, ((x, y, w, h), confidence) in enumerate(zip(bounding_rects, confidence_scores)):
-            # Draw bounding rectangle
-            cv2.rectangle(result_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        # If we found license plates, create a composite image showing both original and cropped plates
+        if len(bounding_rects) == 1:
+            # For single detection, show the cropped license plate prominently
+            x, y, w, h = bounding_rects[0]
             
-            # Add label with confidence score
-            label = f"Plate {i+1}: {confidence:.2f}"
-            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+            # Add some padding around the license plate
+            padding = 10
+            x_start = max(0, x - padding)
+            y_start = max(0, y - padding)
+            x_end = min(image.shape[1], x + w + padding)
+            y_end = min(image.shape[0], y + h + padding)
             
-            # Draw label background
-            cv2.rectangle(result_image, (x, y - label_size[1] - 10), 
-                         (x + label_size[0], y), (0, 255, 0), -1)
+            # Extract license plate region
+            plate_crop = image[y_start:y_end, x_start:x_end]
             
-            # Draw label text
-            cv2.putText(result_image, label, (x, y - 5), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+            # Scale up the license plate for better visibility
+            scale_factor = 3
+            if plate_crop.shape[0] > 0 and plate_crop.shape[1] > 0:
+                scaled_plate = cv2.resize(plate_crop, 
+                                        (plate_crop.shape[1] * scale_factor, 
+                                         plate_crop.shape[0] * scale_factor), 
+                                        interpolation=cv2.INTER_CUBIC)
+            else:
+                scaled_plate = plate_crop
+            
+            # Create result image with original and scaled plate
+            result_height = max(image.shape[0], scaled_plate.shape[0] + 100)
+            result_width = image.shape[1] + scaled_plate.shape[1] + 50
+            result_image = np.zeros((result_height, result_width, 3), dtype=np.uint8)
+            result_image[:] = (240, 240, 240)  # Light gray background
+            
+            # Place original image with bounding box
+            original_with_box = image.copy()
+            cv2.rectangle(original_with_box, (x, y), (x + w, y + h), (0, 255, 0), 3)
+            
+            # Add label
+            label = f"Detected Plate: {confidence_scores[0]:.2f}"
+            cv2.putText(original_with_box, label, (x, y - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # Place images in result
+            result_image[:image.shape[0], :image.shape[1]] = original_with_box
+            
+            # Place scaled license plate
+            if scaled_plate.shape[0] > 0 and scaled_plate.shape[1] > 0:
+                plate_y = 50
+                plate_x = image.shape[1] + 25
+                
+                # Add border around license plate
+                cv2.rectangle(result_image, 
+                            (plate_x - 5, plate_y - 5), 
+                            (plate_x + scaled_plate.shape[1] + 5, plate_y + scaled_plate.shape[0] + 5), 
+                            (0, 255, 0), 3)
+                
+                # Place the scaled license plate
+                result_image[plate_y:plate_y + scaled_plate.shape[0], 
+                           plate_x:plate_x + scaled_plate.shape[1]] = scaled_plate
+                
+                # Add title above the license plate
+                cv2.putText(result_image, "Extracted License Plate", 
+                           (plate_x, plate_y - 15), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
+            
+            return result_image
         
-        return result_image
+        else:
+            # Multiple detections - use traditional bounding box approach
+            result_image = image.copy()
+            
+            for i, ((x, y, w, h), confidence) in enumerate(zip(bounding_rects, confidence_scores)):
+                # Draw bounding rectangle
+                cv2.rectangle(result_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                
+                # Add label with confidence score
+                label = f"Plate {i+1}: {confidence:.2f}"
+                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                
+                # Draw label background
+                cv2.rectangle(result_image, (x, y - label_size[1] - 10), 
+                             (x + label_size[0], y), (0, 255, 0), -1)
+                
+                # Draw label text
+                cv2.putText(result_image, label, (x, y - 5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+            
+            return result_image
     
     def detect_and_save(self, input_path, output_path):
         """
