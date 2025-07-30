@@ -188,13 +188,16 @@ class ImprovedLicensePlateDetector:
         """Validate candidates to find actual license plates."""
         valid_plates = []
         
-        for contour, rect, base_confidence in candidates:
+        for i, (contour, rect, base_confidence) in enumerate(candidates):
             x, y, w, h = rect
             area = cv2.contourArea(contour)
             aspect_ratio = w / h if h > 0 else 0
             
-            # Apply strict filters
+            print(f"  Candidate {i}: pos=({x},{y}), size=({w}x{h}), area={area:.0f}, aspect={aspect_ratio:.2f}")
+            
+            # Apply filters with debug info
             if not self.passes_geometric_filters(area, aspect_ratio, w, h):
+                print(f"    ❌ Failed geometric filters")
                 continue
             
             # Extract ROI for text analysis
@@ -204,13 +207,17 @@ class ImprovedLicensePlateDetector:
             
             # Analyze text characteristics
             text_score = self.analyze_license_plate_text(roi)
-            if text_score < 0.1:  # Lower minimum text score to be less restrictive
+            print(f"    Text score: {text_score:.3f}")
+            if text_score < 0.05:  # Very low minimum text score for debugging
+                print(f"    ❌ Failed text score filter")
                 continue
             
             # Check rectangularity
             rect_area = w * h
             rect_ratio = area / rect_area if rect_area > 0 else 0
-            if rect_ratio < self.min_rect_ratio:
+            print(f"    Rectangularity: {rect_ratio:.3f}")
+            if rect_ratio < 0.3:  # Much lower threshold for debugging
+                print(f"    ❌ Failed rectangularity filter")
                 continue
             
             # Calculate final confidence
@@ -218,8 +225,12 @@ class ImprovedLicensePlateDetector:
                 contour, area, aspect_ratio, rect_ratio, text_score, y, image_shape[0]
             )
             
-            if confidence > 0.2:  # Lower minimum confidence threshold
+            print(f"    Final confidence: {confidence:.3f}")
+            if confidence > 0.1:  # Very low threshold for debugging
                 valid_plates.append((contour, rect, confidence))
+                print(f"    ✅ Added as valid candidate")
+            else:
+                print(f"    ❌ Failed confidence threshold")
         
         # Sort by confidence and remove overlapping detections
         valid_plates = self.remove_overlapping_detections(valid_plates)
@@ -229,16 +240,16 @@ class ImprovedLicensePlateDetector:
     
     def passes_geometric_filters(self, area, aspect_ratio, width, height):
         """Check if candidate passes geometric filters."""
-        # Area filter
-        if area < self.min_area or area > self.max_area:
+        # Area filter - very lenient for debugging
+        if area < 500 or area > 15000:
             return False
         
-        # Aspect ratio filter
-        if aspect_ratio < self.min_aspect_ratio or aspect_ratio > self.max_aspect_ratio:
+        # Aspect ratio filter - very lenient for debugging
+        if aspect_ratio < 1.0 or aspect_ratio > 8.0:
             return False
         
-        # Size filter - more lenient
-        if width < 40 or height < 12 or width > 400 or height > 120:
+        # Size filter - very lenient for debugging
+        if width < 30 or height < 8 or width > 500 or height > 150:
             return False
         
         return True
