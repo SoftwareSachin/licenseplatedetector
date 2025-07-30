@@ -128,8 +128,13 @@ class LicensePlateDetector:
             if i < 10:
                 print(f"  Contour {i}: area={area:.0f}, aspect={aspect_ratio:.2f}, size=({w}x{h})")
             
-            # Filter by area
-            if area < self.min_area or area > self.max_area:
+            # Filter by area - be more restrictive for very large areas
+            if area < self.min_area:
+                area_filtered += 1
+                continue
+            
+            # Much stricter filter for very large areas (likely car outline)
+            if area > 15000:
                 area_filtered += 1
                 continue
                 
@@ -175,29 +180,39 @@ class LicensePlateDetector:
         # Base confidence from rectangularity
         confidence = rect_ratio
         
-        # Bonus for optimal aspect ratio (around 3:1 to 4:1 is typical for license plates)
-        optimal_aspect = 3.5
-        aspect_deviation = abs(aspect_ratio - optimal_aspect) / optimal_aspect
-        aspect_score = max(0, 1 - aspect_deviation)
-        confidence *= (0.7 + 0.3 * aspect_score)
+        # Strong penalty for very large areas (likely entire car outline)
+        if area > 20000:
+            confidence *= 0.3  # Heavy penalty for very large regions
         
-        # Bonus for reasonable size (not too small or too large)
-        optimal_area = 8000
-        area_deviation = abs(area - optimal_area) / optimal_area
-        area_score = max(0, 1 - min(area_deviation, 1))
-        confidence *= (0.8 + 0.2 * area_score)
+        # Bonus for optimal aspect ratio (around 2:1 to 4:1 for license plates)
+        if 2.0 <= aspect_ratio <= 4.5:
+            confidence *= 1.3  # Strong bonus for typical license plate ratios
+        elif 1.5 <= aspect_ratio <= 2.0:
+            confidence *= 1.1  # Moderate bonus for square-ish plates
+        else:
+            confidence *= 0.7  # Penalty for unusual ratios
+        
+        # Bonus for reasonable size (license plates are typically 1000-10000 pixels)
+        if 1000 <= area <= 10000:
+            confidence *= 1.2  # Bonus for typical size
+        elif area < 1000:
+            confidence *= 0.6  # Penalty for too small
         
         # Check contour approximation (rectangles should have 4 vertices)
         epsilon = 0.02 * cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, epsilon, True)
         if len(approx) == 4:
-            confidence *= 1.2  # Bonus for rectangular shape
+            confidence *= 1.3  # Strong bonus for rectangular shape
+        elif len(approx) <= 6:
+            confidence *= 1.1  # Moderate bonus for nearly rectangular
+        else:
+            confidence *= 0.8  # Penalty for complex shapes
         
         return min(confidence, 1.0)
     
-    def remove_overlapping_detections(self, valid_plates, overlap_threshold=0.3):
+    def remove_overlapping_detections(self, valid_plates, overlap_threshold=0.1):
         """
-        Remove overlapping detections using Non-Maximum Suppression.
+        Remove overlapping detections using Non-Maximum Suppression with confidence filtering.
         
         Args:
             valid_plates: List of (contour, bounding_rect, confidence) tuples
@@ -209,10 +224,17 @@ class LicensePlateDetector:
         if len(valid_plates) <= 1:
             return valid_plates
         
-        # Calculate IoU for all pairs and remove overlapping ones
+        # Filter out low-confidence detections first
+        high_confidence_plates = [(c, r, conf) for c, r, conf in valid_plates if conf > 0.6]
+        
+        if not high_confidence_plates:
+            # If no high-confidence detections, take the best 1-2 candidates
+            return valid_plates[:1] if valid_plates else []
+        
+        # Apply NMS to high-confidence detections
         final_plates = []
         
-        for i, (contour1, rect1, conf1) in enumerate(valid_plates):
+        for i, (contour1, rect1, conf1) in enumerate(high_confidence_plates):
             x1, y1, w1, h1 = rect1
             is_duplicate = False
             
@@ -237,7 +259,8 @@ class LicensePlateDetector:
             if not is_duplicate:
                 final_plates.append((contour1, rect1, conf1))
         
-        return final_plates
+        # For typical single license plate images, return only the best detection
+        return final_plates[:1]
     
     def detect_license_plates(self, image):
         """
