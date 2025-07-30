@@ -1,0 +1,4 @@
+Add support for different license plate formats (EU, US, etc.)
+Implement adaptive thresholding for better edge detection
+Add batch processing for multiple images
+Include confidence scoring for detected regions

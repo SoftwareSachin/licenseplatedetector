@@ -1,0 +1,22 @@
+📌 Task 1: License Plate Detection (Without Deep Learning)
+🧾 Problem:
+You are given an input image (input.jpg) containing one or more vehicles. Your goal is to detect
+license plate-like regions using only classical image processing (no pretrained models like
+YOLO, Haar, or OpenCV classifiers).
+✅ Requirements:
+1. Convert the image to grayscale.
+2. Extract regions that are likely to be license plates:
+a. Rectangular
+b. High-contrast edges
+c. Aspect ratio between 2:1 and 5:1
+3. Draw bounding boxes around such regions.
+4. Save the output image as output.jpg.
+🔧 Constraints:
+1. Do not use any pretrained model.
+2. Use only standard image processing libraries: OpenCV, NumPy.
+3. Code must be modular and readable.
+📂 Input:
+input.jpg
+📂 Output:
+output.jpg (result with bounding boxes)
+plate_detector.py (your code)

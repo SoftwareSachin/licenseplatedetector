@@ -1,0 +1,3 @@
+📂 Output:
+output.jpg (result with bounding boxes)
+plate_detector.py (your code)
