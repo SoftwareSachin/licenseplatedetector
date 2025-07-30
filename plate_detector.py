@@ -840,12 +840,27 @@ class LicensePlateDetector:
         
         # Refine the best candidates by checking for actual license plate content
         refined_candidates = []
-        for contour, rect, conf in filtered_candidates[:3]:  # Check top 3
+        for i, (contour, rect, conf) in enumerate(filtered_candidates[:5]):  # Check top 5
             x, y, w, h = rect
-            if self.validate_license_plate_region(full_gray_image[y:y+h, x:x+w]):
+            region = full_gray_image[y:y+h, x:x+w]
+            is_valid = self.validate_license_plate_region(region)
+            print(f"    Validation {i}: pos=({x},{y}), size=({w}x{h}), conf={conf:.3f}, valid={is_valid}")
+            
+            if is_valid:
                 refined_candidates.append((contour, rect, conf))
+            elif len(refined_candidates) == 0 and i >= 2:  # If no valid found after 3 attempts, lower standards
+                print("    No valid plates found, accepting best candidate with lower validation")
+                refined_candidates.append((contour, rect, conf * 0.8))  # Reduce confidence but accept
+                break
         
-        return refined_candidates[:1]  # Return only the best validated candidate
+        # If we have valid candidates, return the best one; otherwise return the highest confidence
+        if len(refined_candidates) > 0:
+            return refined_candidates[:1]
+        elif len(filtered_candidates) > 0:
+            print("    No validation passed, returning best unvalidated candidate")
+            return filtered_candidates[:1]
+        else:
+            return []
     
     def analyze_window_for_license_plate(self, window, edge_window):
         """
@@ -961,29 +976,30 @@ class LicensePlateDetector:
             # Apply threshold
             _, binary = cv2.threshold(region, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
-            # Check for reasonable text coverage
+            # Check for reasonable text coverage (more lenient)
             white_pixels = np.count_nonzero(binary)
             white_ratio = white_pixels / binary.size
-            if not (0.1 <= white_ratio <= 0.5):
+            if not (0.05 <= white_ratio <= 0.7):  # More lenient range
                 return False
             
-            # Check for connected components (characters)
+            # Check for connected components (characters) - more lenient
             num_labels, _ = cv2.connectedComponents(binary)
-            if num_labels < 3 or num_labels > 15:  # Should have several characters
+            if num_labels < 2 or num_labels > 25:  # More lenient range
                 return False
             
-            # Check horizontal distribution of content
+            # Check horizontal distribution of content - more lenient
             horizontal_profile = np.sum(binary, axis=0)
             non_zero_cols = np.count_nonzero(horizontal_profile)
             horizontal_coverage = non_zero_cols / len(horizontal_profile)
-            if horizontal_coverage < 0.3:  # Content should span across width
+            if horizontal_coverage < 0.2:  # More lenient threshold
                 return False
             
-            # Check for reasonable vertical distribution
+            # Check for reasonable vertical distribution - more lenient
             vertical_profile = np.sum(binary, axis=1)
-            peak_rows = np.where(vertical_profile > np.max(vertical_profile) * 0.3)[0]
-            if len(peak_rows) < region.shape[0] * 0.3:  # Should have content in middle area
-                return False
+            if len(vertical_profile) > 0 and np.max(vertical_profile) > 0:
+                peak_rows = np.where(vertical_profile > np.max(vertical_profile) * 0.2)[0]
+                if len(peak_rows) < region.shape[0] * 0.2:  # More lenient threshold
+                    return False
                 
             return True
             
