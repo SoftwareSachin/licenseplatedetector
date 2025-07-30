@@ -479,12 +479,12 @@ class LicensePlateDetector:
         valid_plates = self.filter_strict_license_plates(adjusted_contours, gray)
         print(f"✅ {len(valid_plates)} contours passed strict filtering")
         
-        # If no valid plates found, try alternative edge-based detection
+        # If no valid plates found, try simple rectangular detection
         if len(valid_plates) == 0:
-            print("🔄 No plates found, trying edge-based detection...")
-            edge_plates = self.fallback_edge_detection(gray, roi_start)
-            valid_plates.extend(edge_plates)
-            print(f"🔍 Edge detection found {len(edge_plates)} additional candidates")
+            print("🔄 No plates found, trying simple rectangular detection...")
+            rect_plates = self.simple_rectangle_detection(gray, roi_start)
+            valid_plates.extend(rect_plates)
+            print(f"🔍 Rectangle detection found {len(rect_plates)} additional candidates")
         
         # Remove overlapping detections
         final_plates = self.remove_overlapping_detections(valid_plates)
@@ -499,7 +499,7 @@ class LicensePlateDetector:
     
     def enhance_license_plate_regions(self, gray_roi):
         """
-        Enhanced preprocessing specifically for license plate detection.
+        Targeted preprocessing to find rectangular license plate regions.
         
         Args:
             gray_roi: Grayscale ROI focusing on vehicle area
@@ -507,27 +507,21 @@ class LicensePlateDetector:
         Returns:
             Processed binary image highlighting license plate regions
         """
-        # Apply bilateral filter
-        filtered = cv2.bilateralFilter(gray_roi, 11, 17, 17)
+        # Apply Gaussian blur to reduce noise
+        blurred = cv2.GaussianBlur(gray_roi, (5, 5), 0)
         
-        # Adaptive threshold to handle varying lighting
-        adaptive_thresh = cv2.adaptiveThreshold(filtered, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                              cv2.THRESH_BINARY, 11, 2)
+        # Use Canny edge detection to find edges
+        edges = cv2.Canny(blurred, 50, 200)
         
-        # Morphological operations to connect text characters
-        kernel_horizontal = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 1))
-        kernel_vertical = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3))
-        
-        # Close gaps horizontally (connect characters)
-        processed = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_CLOSE, kernel_horizontal)
-        # Close gaps vertically (solidify text)
-        processed = cv2.morphologyEx(processed, cv2.MORPH_CLOSE, kernel_vertical)
+        # Small morphological closing to connect nearby edges
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        processed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
         
         return processed
     
     def find_license_plate_contours(self, processed_roi):
         """
-        Find contours specifically targeting license plate shapes.
+        Find contours using hierarchical approach to avoid merged regions.
         
         Args:
             processed_roi: Binary processed ROI
@@ -535,12 +529,28 @@ class LicensePlateDetector:
         Returns:
             List of contours
         """
-        # Find external contours
-        contours, _ = cv2.findContours(processed_roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Find all contours with hierarchy
+        contours, hierarchy = cv2.findContours(processed_roi, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Filter out very small contours immediately
-        min_contour_area = 300
-        filtered_contours = [c for c in contours if cv2.contourArea(c) > min_contour_area]
+        # Filter contours based on area and basic shape
+        filtered_contours = []
+        
+        for i, contour in enumerate(contours):
+            area = cv2.contourArea(contour)
+            
+            # Skip very small and very large contours
+            if area < 100 or area > 50000:
+                continue
+                
+            # Get bounding rectangle
+            x, y, w, h = cv2.boundingRect(contour)
+            aspect_ratio = w / h if h > 0 else 0
+            
+            # Basic license plate shape filtering
+            if (1.5 <= aspect_ratio <= 6.0 and 
+                w >= 30 and h >= 10 and 
+                area >= 300):
+                filtered_contours.append(contour)
         
         return filtered_contours
     
@@ -759,6 +769,170 @@ class LicensePlateDetector:
         # Sort by confidence and return best candidates
         candidates.sort(key=lambda x: x[2], reverse=True)
         return candidates[:2]  # Return up to 2 best candidates
+    
+    def simple_rectangle_detection(self, full_gray_image, roi_start):
+        """
+        Simple sliding window approach to find rectangular license plate regions.
+        
+        Args:
+            full_gray_image: Full grayscale image
+            roi_start: Start position of ROI
+            
+        Returns:
+            List of license plate candidates
+        """
+        height = full_gray_image.shape[0]
+        width = full_gray_image.shape[1]
+        roi_end = height
+        
+        # Work on the ROI
+        roi = full_gray_image[roi_start:roi_end, :]
+        
+        # Apply edge detection
+        edges = cv2.Canny(roi, 50, 150)
+        
+        # Find rectangular regions using template matching approach
+        candidates = []
+        
+        # Define license plate size ranges (width, height)
+        plate_sizes = [
+            (120, 30), (140, 35), (160, 40), (180, 45),  # Common sizes
+            (100, 25), (200, 50), (220, 55)  # Variations
+        ]
+        
+        for plate_w, plate_h in plate_sizes:
+            if plate_w > roi.shape[1] or plate_h > roi.shape[0]:
+                continue
+                
+            # Slide window across the ROI
+            step_x, step_y = 5, 3  # Step size for sliding
+            
+            for y in range(0, roi.shape[0] - plate_h, step_y):
+                for x in range(0, roi.shape[1] - plate_w, step_x):
+                    # Extract window
+                    window = roi[y:y+plate_h, x:x+plate_w]
+                    edge_window = edges[y:y+plate_h, x:x+plate_w]
+                    
+                    # Analyze the window for license plate characteristics
+                    confidence = self.analyze_window_for_license_plate(window, edge_window)
+                    
+                    if confidence > 0.4:  # Threshold for acceptance
+                        # Convert coordinates back to full image
+                        full_y = y + roi_start
+                        full_x = x
+                        
+                        # Create a simple rectangular contour
+                        contour = np.array([
+                            [[full_x, full_y]],
+                            [[full_x + plate_w, full_y]],
+                            [[full_x + plate_w, full_y + plate_h]],
+                            [[full_x, full_y + plate_h]]
+                        ], dtype=np.int32)
+                        
+                        candidates.append((contour, (full_x, full_y, plate_w, plate_h), confidence))
+                        print(f"  ✅ Window candidate: size=({plate_w}x{plate_h}), pos=({full_x},{full_y}), conf={confidence:.3f}")
+        
+        # Remove overlapping candidates
+        filtered_candidates = self.remove_overlapping_windows(candidates)
+        
+        # Sort by confidence and return best
+        filtered_candidates.sort(key=lambda x: x[2], reverse=True)
+        return filtered_candidates[:1]  # Return only the best candidate
+    
+    def analyze_window_for_license_plate(self, window, edge_window):
+        """
+        Analyze a window to determine if it contains a license plate.
+        
+        Args:
+            window: Grayscale window
+            edge_window: Edge-detected window
+            
+        Returns:
+            Confidence score
+        """
+        if window.size == 0:
+            return 0.0
+            
+        try:
+            confidence = 0.0
+            
+            # Edge density check
+            edge_ratio = np.count_nonzero(edge_window) / edge_window.size
+            if 0.1 <= edge_ratio <= 0.4:  # Good amount of edges
+                confidence += 0.3
+            elif 0.05 <= edge_ratio <= 0.1 or 0.4 <= edge_ratio <= 0.6:
+                confidence += 0.1
+            
+            # Horizontal structure check
+            horizontal_projection = np.sum(edge_window, axis=1)
+            if len(horizontal_projection) > 0 and np.var(horizontal_projection) > 100:
+                confidence += 0.2
+            
+            # Vertical structure check (characters should create vertical variations)
+            vertical_projection = np.sum(edge_window, axis=0)
+            if len(vertical_projection) > 0 and np.var(vertical_projection) > 50:
+                confidence += 0.2
+            
+            # Contrast check
+            mean_intensity = np.mean(window)
+            std_intensity = np.std(window)
+            if std_intensity > 20:  # Good contrast
+                confidence += 0.2
+            
+            # Central region intensity (license plates often have text in center)
+            h, w = window.shape
+            center_region = window[h//4:3*h//4, w//4:3*w//4]
+            if center_region.size > 0:
+                center_edges = edge_window[h//4:3*h//4, w//4:3*w//4]
+                center_edge_ratio = np.count_nonzero(center_edges) / center_edges.size
+                if center_edge_ratio > 0.1:
+                    confidence += 0.1
+            
+            return min(confidence, 1.0)
+            
+        except:
+            return 0.0
+    
+    def remove_overlapping_windows(self, candidates):
+        """
+        Remove overlapping window candidates using simple overlap detection.
+        
+        Args:
+            candidates: List of (contour, rect, confidence) tuples
+            
+        Returns:
+            Filtered list of candidates
+        """
+        if len(candidates) <= 1:
+            return candidates
+        
+        # Sort by confidence
+        candidates.sort(key=lambda x: x[2], reverse=True)
+        
+        filtered = []
+        for i, (contour, rect, conf) in enumerate(candidates):
+            x1, y1, w1, h1 = rect
+            
+            # Check overlap with already accepted candidates
+            overlaps = False
+            for _, (x2, y2, w2, h2), _ in filtered:
+                # Calculate overlap
+                overlap_x = max(0, min(x1 + w1, x2 + w2) - max(x1, x2))
+                overlap_y = max(0, min(y1 + h1, y2 + h2) - max(y1, y2))
+                overlap_area = overlap_x * overlap_y
+                
+                area1 = w1 * h1
+                area2 = w2 * h2
+                
+                # If significant overlap, skip this candidate
+                if overlap_area > 0.3 * min(area1, area2):
+                    overlaps = True
+                    break
+            
+            if not overlaps:
+                filtered.append((contour, rect, conf))
+        
+        return filtered
     
     def draw_detections(self, image, bounding_rects, confidence_scores):
         """
