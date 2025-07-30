@@ -8,8 +8,8 @@ class LicensePlateDetector:
     Detects rectangular regions with high-contrast edges and appropriate aspect ratios.
     """
     
-    def __init__(self, min_area=800, max_area=50000, min_aspect_ratio=1.2, max_aspect_ratio=6.0,
-                 canny_low=50, canny_high=150, min_rect_ratio=0.6):
+    def __init__(self, min_area=1000, max_area=8000, min_aspect_ratio=2.0, max_aspect_ratio=5.0,
+                 canny_low=80, canny_high=200, min_rect_ratio=0.7):
         """
         Initialize the license plate detector with configurable parameters.
         
@@ -157,37 +157,42 @@ class LicensePlateDetector:
             if i < 10:
                 print(f"  Contour {i}: area={area:.0f}, aspect={aspect_ratio:.2f}, size=({w}x{h})")
             
-            # More lenient area filtering for license plates
-            if area < 500 or area > 12000:  # Expanded range for different plate sizes
+            # Stricter area filtering for license plates
+            if area < 1000 or area > 8000:  # More restrictive range for actual plates
                 area_filtered += 1
                 continue
                 
-            # License plate aspect ratio filtering - more lenient
-            if aspect_ratio < 1.2 or aspect_ratio > 6.0:
+            # Stricter license plate aspect ratio filtering
+            if aspect_ratio < 2.0 or aspect_ratio > 5.0:  # License plates are typically 2:1 to 5:1
                 aspect_filtered += 1
                 continue
             
-            # Size filtering - more flexible dimensions
-            if w < 40 or h < 12 or w > 400 or h > 120:
+            # Stricter size filtering for real license plates
+            if w < 60 or h < 15 or w > 300 or h > 80:  # More realistic dimensions
                 aspect_filtered += 1
                 continue
             
-            # Text density analysis - more lenient threshold
+            # Enhanced text analysis with higher threshold
             roi = gray_image[y:y+h, x:x+w]
             if roi.size == 0:
                 continue
                 
-            # Check for text-like characteristics with lower threshold
-            text_score = self.analyze_text_characteristics(roi)
-            if text_score < 0.15:  # Much lower threshold for text detection
+            # Check for text-like characteristics with higher threshold
+            text_score = self.analyze_enhanced_text_characteristics(roi)
+            if text_score < 0.4:  # Higher threshold for better text detection
                 text_filtered += 1
                 continue
             
-            # Check rectangularity
+            # Check rectangularity - stricter requirement
             rect_area = w * h
             rect_ratio = area / rect_area if rect_area > 0 else 0
             
-            if rect_ratio < 0.6:  # License plates should be reasonably rectangular
+            if rect_ratio < 0.7:  # License plates should be more rectangular
+                continue
+            
+            # Additional character-like region validation
+            if not self.validate_character_regions(roi):
+                text_filtered += 1
                 continue
             
             # Calculate enhanced confidence score
@@ -203,9 +208,9 @@ class LicensePlateDetector:
         
         return valid_plates
     
-    def analyze_text_characteristics(self, roi):
+    def analyze_enhanced_text_characteristics(self, roi):
         """
-        Simplified text analysis for license plate detection.
+        Enhanced text analysis specifically for license plate detection.
         
         Args:
             roi: Region of interest (grayscale image patch)
@@ -220,24 +225,108 @@ class LicensePlateDetector:
             # Apply threshold to get binary image
             _, binary = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
-            # Simple edge density check
+            # Edge density analysis - license plates have strong edges
             edges = cv2.Canny(roi, 50, 150)
             edge_density = np.count_nonzero(edges) / edges.size
             
-            # Count connected components (characters should create multiple components)
-            num_labels, _ = cv2.connectedComponents(binary)
-            component_score = min(num_labels / 10.0, 1.0)  # More components = more likely text
+            # Character-like component analysis
+            num_labels, labels = cv2.connectedComponents(binary)
             
-            # Aspect ratio check - license plates are wider than tall
-            aspect_bonus = 0.2 if roi.shape[1] > roi.shape[0] * 1.5 else 0.0
+            # Count components that look like characters
+            char_like_components = 0
+            for label in range(1, num_labels):  # Skip background (label 0)
+                component_mask = (labels == label).astype(np.uint8) * 255
+                contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                if contours:
+                    x, y, w, h = cv2.boundingRect(contours[0])
+                    component_area = cv2.contourArea(contours[0])
+                    component_aspect = w / h if h > 0 else 0
+                    
+                    # Character-like criteria
+                    if (0.2 <= component_aspect <= 1.5 and  # Character aspect ratio
+                        component_area > 20 and  # Minimum size
+                        w >= 5 and h >= 8):  # Minimum dimensions
+                        char_like_components += 1
             
-            # Combine scores with more lenient weighting
-            text_score = edge_density * 0.5 + component_score * 0.3 + aspect_bonus
+            # License plates typically have 5-8 visible characters
+            char_score = min(char_like_components / 6.0, 1.0)
+            
+            # Contrast analysis - license plates have high contrast
+            contrast = np.std(roi) / 255.0
+            
+            # Horizontal text distribution - characters spread across width
+            horizontal_profile = np.sum(binary, axis=0)
+            non_zero_cols = np.count_nonzero(horizontal_profile)
+            horizontal_coverage = non_zero_cols / len(horizontal_profile)
+            
+            # Combine scores with stricter weighting
+            text_score = (edge_density * 0.3 + 
+                         char_score * 0.4 + 
+                         contrast * 0.2 + 
+                         horizontal_coverage * 0.1)
+            
             return min(text_score, 1.0)
             
         except Exception as e:
-            print(f"Text analysis error: {e}")
-            return 0.5  # Give neutral score if analysis fails
+            print(f"Enhanced text analysis error: {e}")
+            return 0.0  # Return 0 if analysis fails
+    
+    def validate_character_regions(self, roi):
+        """
+        Validate that the region contains character-like structures.
+        
+        Args:
+            roi: Region of interest (grayscale image patch)
+            
+        Returns:
+            True if region contains character-like structures
+        """
+        if roi.size == 0:
+            return False
+            
+        try:
+            # Apply adaptive threshold for better character detection
+            binary = cv2.adaptiveThreshold(roi, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                         cv2.THRESH_BINARY, 11, 2)
+            
+            # Find connected components
+            num_labels, labels = cv2.connectedComponents(binary)
+            
+            valid_chars = 0
+            for label in range(1, num_labels):
+                component_mask = (labels == label).astype(np.uint8) * 255
+                contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                if contours:
+                    x, y, w, h = cv2.boundingRect(contours[0])
+                    area = cv2.contourArea(contours[0])
+                    aspect = w / h if h > 0 else 0
+                    
+                    # Validate character-like properties
+                    if (0.2 <= aspect <= 1.8 and  # Character aspect ratio
+                        30 <= area <= 800 and  # Character area range
+                        w >= 6 and h >= 10 and  # Minimum character size
+                        w <= 40 and h <= 60):  # Maximum character size
+                        valid_chars += 1
+            
+            # License plates should have at least 4 character-like regions
+            return valid_chars >= 4
+            
+        except:
+            return False
+    
+    def analyze_text_characteristics(self, roi):
+        """
+        Simplified text analysis for license plate detection (legacy method).
+        
+        Args:
+            roi: Region of interest (grayscale image patch)
+            
+        Returns:
+            Text-like score between 0 and 1
+        """
+        return self.analyze_enhanced_text_characteristics(roi)
     
     def calculate_license_plate_confidence(self, contour, area, aspect_ratio, rect_ratio, text_score):
         """
@@ -253,25 +342,37 @@ class LicensePlateDetector:
         Returns:
             Confidence score between 0 and 1
         """
-        # Start with rectangularity
-        confidence = rect_ratio * 0.3
+        # Text score is most important for license plates (50% weight)
+        confidence = text_score * 0.5
         
-        # Text score is very important for license plates
-        confidence += text_score * 0.4
+        # Rectangularity is critical (25% weight)
+        confidence += rect_ratio * 0.25
         
-        # Aspect ratio scoring - typical license plates are 2:1 to 4:1
-        if 2.0 <= aspect_ratio <= 4.0:
-            confidence += 0.2  # Perfect aspect ratio
-        elif 1.5 <= aspect_ratio <= 2.0:
-            confidence += 0.1  # Acceptable square-ish plates
+        # Aspect ratio scoring - typical license plates are 2.5:1 to 4:1 (15% weight)
+        if 2.5 <= aspect_ratio <= 4.0:
+            confidence += 0.15  # Perfect aspect ratio for license plates
+        elif 2.0 <= aspect_ratio < 2.5:
+            confidence += 0.1  # Good aspect ratio
+        elif 4.0 < aspect_ratio <= 5.0:
+            confidence += 0.08  # Acceptable wider plates
         else:
-            confidence += 0.05  # Non-standard but possible
+            confidence += 0.02  # Non-standard aspect ratio
         
-        # Size scoring - typical license plate areas
-        if 1500 <= area <= 5000:
-            confidence += 0.1  # Ideal size
-        elif 800 <= area <= 1500 or 5000 <= area <= 8000:
-            confidence += 0.05  # Acceptable size
+        # Size scoring - typical license plate areas (10% weight)
+        if 2000 <= area <= 6000:
+            confidence += 0.1  # Ideal size for license plates
+        elif 1500 <= area < 2000 or 6000 < area <= 8000:
+            confidence += 0.05  # Acceptable size range
+        else:
+            confidence += 0.01  # Non-standard size
+        
+        # Bonus for contour approximation (rectangles should have 4 vertices)
+        epsilon = 0.02 * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        if len(approx) == 4:
+            confidence += 0.05  # Bonus for perfect rectangle
+        elif len(approx) <= 6:
+            confidence += 0.02  # Small bonus for nearly rectangular
         
         return min(confidence, 1.0)
     

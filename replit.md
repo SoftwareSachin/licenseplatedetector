@@ -8,6 +8,19 @@ This is a classical computer vision application for detecting license plates in 
 
 Preferred communication style: Simple, everyday language.
 
+## Recent Changes (Migration - July 30, 2025)
+
+### Migration to Replit Environment
+- **Security Enhancement**: Added proper Flask configuration with session secrets and proxy fix middleware
+- **Code Structure**: Created `main.py` entry point following Replit Flask patterns
+- **Detection Accuracy**: Enhanced license plate detection algorithm with:
+  - Stricter filtering criteria (area: 1000-8000px, aspect ratio: 2.0-5.0)
+  - Advanced text analysis for character-like region validation
+  - Improved confidence scoring with weighted criteria (text: 50%, shape: 25%, aspect: 15%, size: 10%)
+  - Better edge detection parameters (Canny: 80-200 thresholds)
+- **LSP Diagnostics**: Fixed OpenCV compatibility issues and type errors
+- **Frontend Updates**: Updated default detection parameters to match improved algorithm
+
 ## System Architecture
 
 ### Frontend Architecture
