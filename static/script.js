@@ -201,7 +201,7 @@ class LicensePlateDetector {
     }
 
     displayDetectionStats(result) {
-        const { num_plates, confidence_scores, processing_time } = result;
+        const { num_plates, confidence_scores, processing_time, plate_details } = result;
 
         let html = `
             <div class="detection-summary mb-3">
@@ -231,7 +231,49 @@ class LicensePlateDetector {
             </div>
         `;
 
-        if (num_plates > 0) {
+        if (num_plates > 0 && plate_details && plate_details.length > 0) {
+            html += `
+                <h6 class="mb-3"><i class="fas fa-car"></i> Detected License Plates</h6>
+                <div class="results-scroll">
+            `;
+
+            plate_details.forEach((plate, index) => {
+                const confidencePercent = (plate.confidence * 100).toFixed(1);
+                const confidenceClass = plate.confidence >= 0.7 ? 'success' : plate.confidence >= 0.5 ? 'warning' : 'danger';
+                
+                html += `
+                    <div class="detection-result mb-3 p-3 border rounded">
+                        <div class="row">
+                            <div class="col-md-4">
+                                <img src="${plate.crop_url}" alt="License Plate ${plate.plate_number}" 
+                                     class="img-fluid rounded border" style="max-height: 100px;">
+                            </div>
+                            <div class="col-md-8">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <h6 class="fw-bold mb-0">Plate ${plate.plate_number}</h6>
+                                    <span class="badge bg-${confidenceClass}">${confidencePercent}%</span>
+                                </div>
+                                <div class="mb-2">
+                                    <strong>Text:</strong> 
+                                    <span class="badge bg-primary fs-6">${plate.text}</span>
+                                </div>
+                                <div class="confidence-bar mb-2">
+                                    <div class="confidence-fill bg-${confidenceClass}" style="width: ${confidencePercent}%"></div>
+                                </div>
+                                <small class="text-muted">
+                                    Method: ${plate.method} | 
+                                    Position: ${plate.position.x}, ${plate.position.y} | 
+                                    Size: ${plate.position.width}×${plate.position.height}
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+        } else if (num_plates > 0) {
+            // Fallback to old format if plate_details not available
             html += `
                 <h6 class="mb-3"><i class="fas fa-chart-bar"></i> Detection Details</h6>
                 <div class="results-scroll">
@@ -258,9 +300,12 @@ class LicensePlateDetector {
             html += '</div>';
 
             // Add summary statistics
-            const avgConfidence = confidence_scores.reduce((a, b) => a + b, 0) / confidence_scores.length;
-            const maxConfidence = Math.max(...confidence_scores);
-            const minConfidence = Math.min(...confidence_scores);
+            const confidenceValues = plate_details && plate_details.length > 0 
+                ? plate_details.map(p => p.confidence) 
+                : confidence_scores;
+            const avgConfidence = confidenceValues.reduce((a, b) => a + b, 0) / confidenceValues.length;
+            const maxConfidence = Math.max(...confidenceValues);
+            const minConfidence = Math.min(...confidenceValues);
 
             html += `
                 <div class="mt-3 p-3 bg-light rounded">

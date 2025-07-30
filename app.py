@@ -81,8 +81,24 @@ def detect_plates():
         
         # Detect license plates
         start_time = time.time()
-        num_plates, confidence_scores = detector.detect_and_save(input_path, output_path)
+        num_plates, confidence_scores, plate_details = detector.detect_and_save(input_path, output_path)
         processing_time = time.time() - start_time
+        
+        # Save individual plate crops for dashboard
+        plate_crops = []
+        for i, plate_info in enumerate(plate_details):
+            crop_filename = f"{unique_id}_plate_{i+1}.jpg"
+            crop_path = os.path.join(app.config['OUTPUT_FOLDER'], crop_filename)
+            cv2.imwrite(crop_path, plate_info['roi'])
+            
+            plate_crops.append({
+                'plate_number': plate_info['plate_number'],
+                'text': plate_info['text'],
+                'confidence': plate_info['confidence'],
+                'method': plate_info['method'],
+                'crop_url': url_for('get_output', filename=crop_filename),
+                'position': plate_info['position']
+            })
         
         # Clean up input file
         os.remove(input_path)
@@ -92,7 +108,8 @@ def detect_plates():
             'num_plates': num_plates,
             'confidence_scores': confidence_scores,
             'processing_time': round(processing_time, 3),
-            'output_url': url_for('get_output', filename=output_filename)
+            'output_url': url_for('get_output', filename=output_filename),
+            'plate_details': plate_crops
         })
         
     except Exception as e:
