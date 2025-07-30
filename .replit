@@ -2,7 +2,7 @@ modules = ["python-3.11", "nodejs-20", "web"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["libGL", "libGLU", "openssl", "postgresql"]
+packages = ["libGL", "libGLU", "openssl", "postgresql", "tesseract"]
 
 [workflows]
 runButton = "Project"

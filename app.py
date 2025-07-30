@@ -4,7 +4,7 @@ from werkzeug.utils import secure_filename
 from werkzeug.middleware.proxy_fix import ProxyFix
 import cv2
 import numpy as np
-from ocr_plate_detector import OCRLicensePlateDetector
+from realistic_plate_detector import RealisticLicensePlateDetector
 import uuid
 import time
 import logging
@@ -69,12 +69,12 @@ def detect_plates():
         canny_low = int(request.form.get('canny_low', 50))
         canny_high = int(request.form.get('canny_high', 150))
         
-        # Initialize OCR detector with custom parameters
-        detector = OCRLicensePlateDetector(
+        # Initialize realistic detector with custom parameters
+        detector = RealisticLicensePlateDetector(
             min_area=min_area,
             max_area=max_area,
-            min_aspect_ratio=min_aspect,
-            max_aspect_ratio=max_aspect,
+            min_aspect=min_aspect,
+            max_aspect=max_aspect,
             canny_low=canny_low,
             canny_high=canny_high
         )
